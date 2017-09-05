@@ -20,6 +20,8 @@
 
 #include <rapidjson/document.h>
 
+#include <CoreConsole.h>
+
 #include <Error.h>
 
 #include <deque>
@@ -131,6 +133,8 @@ static InitFunction initFunction([] ()
 				}
 			}
 
+			streaming::AddDataFileToLoadList("CFX_PSEUDO_CACHE", resource->GetName());
+
 			{
 				auto map = metaData->GetEntries("this_is_a_map");
 
@@ -157,6 +161,8 @@ static InitFunction initFunction([] ()
 		//while (true)
 		{
 			fwRefContainer<fx::ResourceManager> manager = fx::CreateResourceManager();
+			manager->SetComponent(console::GetDefaultContext());
+
 			Instance<fx::ResourceManager>::Set(manager.GetRef());
 
 			g_resourceManager = manager;

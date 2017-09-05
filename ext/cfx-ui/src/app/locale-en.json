@@ -1,4 +1,5 @@
 {
+	"#ExitToDesktop": "Exit to desktop",
     "#ServerList_Name": "Name",
     "#ServerList_Players": "Players",
     "#ServerList_Ping": "Ping",
@@ -17,6 +18,7 @@
     "#Servers_ConnectingTo": "Connecting to {{ serverName }}...",
     "#Servers_ConnectFailed": "Connection failed",
     "#Servers_CloseOverlay": "Close",
+    "#Servers_CancelOverlay": "Cancel",
     "#Servers_Message": "{{ message }}",
     "#ServerList_Connect": "Connect...",
     "#ServerList_AddFavorite": "Add Favorite",

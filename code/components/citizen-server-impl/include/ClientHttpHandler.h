@@ -12,11 +12,17 @@ namespace fx
 	class ClientMethodRegistry : public fwRefCountable
 	{
 	public:
-		using THandler = std::function<json(std::map<std::string, std::string>&, const fwRefContainer<net::HttpRequest>&)>;
+		using TCallback = std::function<void(const json&)>;
 
-		std::optional<THandler> GetHandler(const std::string& method);
+		using THandler = std::function<void(const std::map<std::string, std::string>&, const fwRefContainer<net::HttpRequest>&, const TCallback&)>;
 
-		void AddHandler(const std::string& method, const THandler& handler);
+		using TFilter = std::function<void(const json&, const std::map<std::string, std::string>&, const fwRefContainer<net::HttpRequest>&, const TCallback&)>;
+
+		virtual std::optional<THandler> GetHandler(const std::string& method);
+
+		virtual void AddHandler(const std::string& method, const THandler& handler);
+
+		virtual void AddAfterFilter(const std::string& method, const TFilter& handler);
 
 	private:
 		std::map<std::string, THandler> m_methods;

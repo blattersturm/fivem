@@ -3,6 +3,8 @@
 #include "Console.Variables.h"
 #include "Console.h"
 
+#include <se/Security.h>
+
 #include <sstream>
 
 namespace console
@@ -12,6 +14,8 @@ struct ConsoleManagers : public ConsoleManagersBase
 	std::unique_ptr<ConsoleCommandManager> commandManager;
 
 	std::unique_ptr<ConsoleVariableManager> variableManager;
+
+	std::shared_ptr<ConsoleCommand> helpCommand;
 };
 
 Context::Context()
@@ -28,6 +32,51 @@ Context::Context(Context* fallbackContext)
 	managers->commandManager  = std::make_unique<ConsoleCommandManager>(this);
 	managers->variableManager = std::make_unique<ConsoleVariableManager>(this);
 
+	managers->helpCommand = std::make_shared<ConsoleCommand>(managers->commandManager.get(), "cmdlist", [=]()
+	{
+		std::set<std::string, IgnoreCaseLess> commands;
+
+		managers->commandManager->ForAllCommands([&](const std::string& cmdName)
+		{
+			commands.insert(cmdName);
+		});
+
+		if (m_fallbackContext)
+		{
+			m_fallbackContext->GetCommandManager()->ForAllCommands([&](const std::string& cmdName)
+			{
+				commands.insert(cmdName);
+			});
+		}
+
+		for (auto& commandName : commands)
+		{
+			if (!seCheckPrivilege(fmt::sprintf("command.%s", commandName)))
+			{
+				continue;
+			}
+
+			auto cvar = managers->variableManager->FindEntryRaw(commandName);
+
+			if (!cvar)
+			{
+				if (m_fallbackContext)
+				{
+					cvar = m_fallbackContext->GetVariableManager()->FindEntryRaw(commandName);
+				}
+			}
+
+			if (cvar)
+			{
+				console::Printf("CmdSystem", "%s = %s\n", commandName, cvar->GetValue());
+			}
+			else
+			{
+				console::Printf("CmdSystem", "%s\n", commandName);
+			}
+		}
+	});
+
 	m_variableModifiedFlags = 0;
 }
 
@@ -43,12 +92,10 @@ ConsoleCommandManager* Context::GetCommandManager()
 
 void Context::ExecuteSingleCommand(const std::string& command)
 {
-	ProgramArguments arguments = Tokenize(command);
-
-	ExecuteSingleCommand(arguments);
+	GetCommandManager()->Invoke(command);
 }
 
-void Context::ExecuteSingleCommand(const ProgramArguments& arguments)
+void Context::ExecuteSingleCommandDirect(const ProgramArguments& arguments)
 {
 	// early out if no command nor arguments were passed
 	if (arguments.Count() == 0)
@@ -61,7 +108,7 @@ void Context::ExecuteSingleCommand(const ProgramArguments& arguments)
 	std::string command = localArgs.Shift();
 
 	// run the command through the command manager
-	GetCommandManager()->Invoke(command, localArgs);
+	GetCommandManager()->InvokeDirect(command, localArgs);
 }
 
 void Context::AddToBuffer(const std::string& text)
@@ -169,14 +216,19 @@ Context* GetDefaultContext()
 	return defaultContext.get();
 }
 
+void CreateContext(Context* parentContext, fwRefContainer<Context>* outContext)
+{
+	*outContext = new Context(parentContext);
+}
+
 void ExecuteSingleCommand(const std::string& command)
 {
 	return GetDefaultContext()->ExecuteSingleCommand(command);
 }
 
-void ExecuteSingleCommand(const ProgramArguments& arguments)
+void ExecuteSingleCommandDirect(const ProgramArguments& arguments)
 {
-	return GetDefaultContext()->ExecuteSingleCommand(arguments);
+	return GetDefaultContext()->ExecuteSingleCommandDirect(arguments);
 }
 
 void AddToBuffer(const std::string& text)
@@ -369,5 +421,6 @@ static InitFunction initFunction([]()
 {
 	auto cxt = console::GetDefaultContext();
 	Instance<ConsoleCommandManager>::Set(cxt->GetCommandManager());
+	Instance<ConsoleVariableManager>::Set(cxt->GetVariableManager());
 	Instance<console::Context>::Set(cxt);
 });

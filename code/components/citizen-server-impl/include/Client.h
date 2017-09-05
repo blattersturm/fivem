@@ -5,6 +5,24 @@
 
 #include <enet/enet.h>
 
+#include <ComponentHolder.h>
+
+#include <tbb/concurrent_unordered_map.h>
+
+#include <any>
+
+namespace {
+	using namespace std::literals::chrono_literals;
+
+	constexpr const auto CLIENT_DEAD_TIMEOUT = 10s;
+}
+
+#ifdef COMPILING_CITIZEN_SERVER_IMPL
+#define SERVER_IMPL_EXPORT DLL_EXPORT
+#else
+#define SERVER_IMPL_EXPORT DLL_IMPORT
+#endif
+
 namespace fx
 {
 	struct enet_peer_deleter
@@ -15,14 +33,14 @@ namespace fx
 		}
 	};
 
-	class Client
+	class SERVER_IMPL_EXPORT Client : public ComponentHolderImpl<Client>
 	{
 	public:
 		Client(const std::string& guid);
 
 		void SetPeer(ENetPeer* peer);
 
-		void SetNetId(uint16_t netId);
+		void SetNetId(uint32_t netId);
 
 		void SetNetBase(uint32_t netBase);
 
@@ -31,7 +49,7 @@ namespace fx
 
 		bool IsDead();
 
-		inline uint16_t GetNetId()
+		inline uint32_t GetNetId()
 		{
 			return m_netId;
 		}
@@ -66,6 +84,13 @@ namespace fx
 			m_name = name;
 		}
 
+		inline const std::string& GetTcpEndPoint()
+		{
+			return m_tcpEndPoint;
+		}
+
+		void SetTcpEndPoint(const std::string& value);
+
 		inline const std::string& GetConnectionToken()
 		{
 			return m_connectionToken;
@@ -76,10 +101,40 @@ namespace fx
 			m_connectionToken = value;
 		}
 
+		inline std::chrono::milliseconds GetLastSeen()
+		{
+			return m_lastSeen;
+		}
+
+		inline const std::vector<std::string>& GetIdentifiers()
+		{
+			return m_identifiers;
+		}
+
+		inline bool HasRouted()
+		{
+			return m_hasRouted;
+		}
+
+		inline void SetHasRouted()
+		{
+			m_hasRouted = true;
+		}
+
+		inline void AddIdentifier(const std::string& identifier)
+		{
+			m_identifiers.emplace_back(identifier);
+		}
+
+		const std::any& GetData(const std::string& key);
+
+		void SetData(const std::string& key, const std::any& data);
+
 		void SendPacket(int channel, const net::Buffer& buffer, ENetPacketFlag flags = (ENetPacketFlag)0);
 
 		fwEvent<> OnAssignNetId;
 		fwEvent<> OnAssignPeer;
+		fwEvent<> OnAssignTcpEndPoint;
 
 	private:
 		// a temporary token for tying HTTP connections to UDP connections
@@ -94,8 +149,11 @@ namespace fx
 		// the client's primary GUID
 		std::string m_guid;
 
+		// the client's identifiers
+		std::vector<std::string> m_identifiers;
+
 		// the client's netid
-		uint16_t m_netId;
+		uint32_t m_netId;
 
 		// the client's netbase
 		uint32_t m_netBase;
@@ -103,7 +161,16 @@ namespace fx
 		// the client's nickname
 		std::string m_name;
 
+		// the client's remote endpoint used for HTTP
+		std::string m_tcpEndPoint;
+
 		// the client's ENet peer
 		std::unique_ptr<ENetPeer, enet_peer_deleter> m_peer;
+
+		// whether the client has sent a routing msg once
+		bool m_hasRouted;
+
+		// an arbitrary set of data
+		tbb::concurrent_unordered_map<std::string, std::any> m_userData;
 	};
 }

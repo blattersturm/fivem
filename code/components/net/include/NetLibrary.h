@@ -18,11 +18,13 @@
 
 #include "NetLibraryImplBase.h"
 
+#include <NetAddress.h>
+
 #include <enet/enet.h>
 
 #include <concurrent_queue.h>
 
-#define NETWORK_PROTOCOL 4
+#define NETWORK_PROTOCOL 5
 
 enum NetAddressType
 {
@@ -139,6 +141,8 @@ private:
 
 	NetAddress m_currentServer;
 
+	net::PeerAddress m_currentServerPeer;
+
 	std::string m_token;
 
 	uint32_t m_lastConnect;
@@ -200,7 +204,7 @@ public:
 
 	virtual void RunFrame();
 
-	virtual void ConnectToServer(const char* hostname, uint16_t port);
+	virtual void ConnectToServer(const net::PeerAddress& address);
 
 	virtual void Disconnect(const char* reason);
 
@@ -233,11 +237,13 @@ public:
 	// waits for connection during the pre-game loading sequence
 	bool ProcessPreGameTick();
 
-	void AddReliableHandler(const char* type, ReliableHandlerType function);
+	void AddReliableHandler(const char* type, const ReliableHandlerType& function);
 
 	void Death();
 
 	void Resurrection();
+
+	void CancelDeferredConnection();
 
 	void SendNetEvent(const std::string& eventName, const std::string& argsSerialized, int target);
 
@@ -253,6 +259,11 @@ public:
 	inline virtual NetAddress GetCurrentServer() override
 	{
 		return m_currentServer;
+	}
+
+	inline virtual net::PeerAddress GetCurrentPeer()
+	{
+		return m_currentServerPeer;
 	}
 
 	inline int GetServerProtocol() override

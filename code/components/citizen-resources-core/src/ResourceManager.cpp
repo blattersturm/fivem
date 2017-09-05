@@ -10,6 +10,8 @@
 
 #include <network/uri.hpp>
 
+#include <ETWProviders/etwprof.h>
+
 static thread_local fx::ResourceManager* g_currentManager;
 
 namespace fx
@@ -90,14 +92,25 @@ fwRefContainer<Resource> ResourceManagerImpl::GetResource(const std::string& ide
 
 void ResourceManagerImpl::ForAllResources(const std::function<void(fwRefContainer<Resource>)>& function)
 {
-	std::unique_lock<std::recursive_mutex> lock(m_resourcesMutex);
+	std::vector<fwRefContainer<Resource>> currentResources;
+
+	// collect resources so the mutex doesn't have to last for the callback duration
+	// leading to potential deadlocks
+	{
+		std::unique_lock<std::recursive_mutex> lock(m_resourcesMutex);
+
+		for (auto& resource : m_resources)
+		{
+			currentResources.push_back(resource.second);
+		}
+	}
 
 	auto lastManager = g_currentManager;
 	g_currentManager = this;
 
-	for (auto& resource : m_resources)
+	for (auto& resource : currentResources)
 	{
-		function(resource.second);
+		function(resource);
 	}
 
 	g_currentManager = lastManager;
@@ -161,6 +174,7 @@ void ResourceManagerImpl::Tick()
 	// execute resource tick functions
 	ForAllResources([] (fwRefContainer<Resource> resource)
 	{
+		CETWScope etwScope(va("%s tick", resource->GetName()));
 		resource->Tick();
 	});
 
@@ -172,7 +186,10 @@ void ResourceManagerImpl::Tick()
 
 ResourceManager* ResourceManager::GetCurrent()
 {
-	assert(g_currentManager);
+	if (!g_currentManager)
+	{
+		throw std::runtime_error("No current resource manager.");
+	}
 
 	return g_currentManager;
 }
@@ -180,6 +197,24 @@ ResourceManager* ResourceManager::GetCurrent()
 void ResourceManagerImpl::MakeCurrent()
 {
 	g_currentManager = this;
+}
+
+static std::function<std::string(const std::string&, const std::string&)> g_callRefCallback;
+
+std::string ResourceManagerImpl::CallReferenceInternal(const std::string& functionReference, const std::string& argsSerialized)
+{
+	if (g_callRefCallback)
+	{
+		MakeCurrent();
+		return g_callRefCallback(functionReference, argsSerialized);
+	}
+
+	return std::string();
+}
+
+void ResourceManager::SetCallRefCallback(const std::function<std::string(const std::string &, const std::string &)>& refCallback)
+{
+	g_callRefCallback = refCallback;
 }
 
 ResourceManager* CreateResourceManager()

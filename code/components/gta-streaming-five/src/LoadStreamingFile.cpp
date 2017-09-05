@@ -177,11 +177,26 @@ static hook::cdecl_stub<void(DataFileEntry* entry)> _removePackfile([]()
 
 bool CfxPackfileMounter::MountFile(DataFileEntry* entry)
 {
+	// 505 hardcoded
+	//auto _initManifestChunk = (void(*)(void*))0x1408C8B94;
+	//auto _loadManifestChunk = (void(*)(void*))0x1408CCA6C;
+	//auto _clearManifestChunk = (void(*)(void*))0x14089AC8C;
+	//auto manifestChunkPtr = (void*)0x1422F5230;
+
+	// 1103 hardcoded
+	auto _initManifestChunk = (void(*)(void*))0x1408FA41C;
+	auto _loadManifestChunk = (void(*)(void*))0x1408FE3D0;
+	auto _clearManifestChunk = (void(*)(void*))0x1408CC344;
+	auto manifestChunkPtr = (void*)0x142415770;
+
 	entry->disabled = true;
 	//entry->persistent = true;
 	//entry->locked = true;
 	//entry->overlay = true;
+	_initManifestChunk(manifestChunkPtr);
 	_addPackfile(entry);
+	_loadManifestChunk(manifestChunkPtr);
+	_clearManifestChunk(manifestChunkPtr);
 	return true;
 }
 
@@ -203,6 +218,11 @@ static CfxPackfileMounter g_staticRpfMounter;
 void ForAllStreamingFiles(const std::function<void(const std::string&)>& cb);
 
 static CDataFileMountInterface* LookupDataFileMounter(const std::string& type);
+
+static hook::cdecl_stub<bool(void* streaming, int idx)> _isResourceNotCached([]()
+{
+	return hook::get_pattern("74 07 8A 40 48 24 01 EB 02 B0 01", -0x1B);
+});
 
 class CfxPseudoMounter : public CDataFileMountInterface
 {
@@ -230,15 +250,23 @@ public:
 						}
 
 						auto mgr = streaming::Manager::GetInstance();
-						mgr->RequestObject(obj, 0);
 
-						streaming::LoadObjectsNow(0);
+						if (_isResourceNotCached(mgr, obj))
+						{
+							mgr->RequestObject(obj, 0);
 
-						mgr->ReleaseObject(obj);
+							streaming::LoadObjectsNow(0);
 
-						loadedCollisions.insert(file);
+							mgr->ReleaseObject(obj);
 
-						trace("Loaded %s (id %d)\n", file, obj);
+							loadedCollisions.insert(file);
+
+							trace("Loaded %s (id %d)\n", file, obj);
+						}
+						else
+						{
+							trace("Skipped %s - it's cached! (id %d)\n", file, obj);
+						}
 					}
 				}
 			});
@@ -285,6 +313,26 @@ public:
 
 static CfxPseudoMounter g_staticPseudoMounter;
 
+void LoadCache(const char* tagName);
+
+class CfxCacheMounter : public CDataFileMountInterface
+{
+public:
+	virtual bool MountFile(DataFileEntry* entry) override
+	{
+		LoadCache(entry->name);
+
+		return true;
+	}
+
+	virtual bool UnmountFile(DataFileEntry* entry) override
+	{
+		return true;
+	}
+};
+
+static CfxCacheMounter g_staticCacheMounter;
+
 static CDataFileMountInterface** g_dataFileMounters;
 
 static CDataFileMountInterface* LookupDataFileMounter(const std::string& type)
@@ -292,6 +340,11 @@ static CDataFileMountInterface* LookupDataFileMounter(const std::string& type)
 	if (type == "CFX_PSEUDO_ENTRY")
 	{
 		return &g_staticPseudoMounter;
+	}
+
+	if (type == "CFX_PSEUDO_CACHE")
+	{
+		return &g_staticCacheMounter;
 	}
 
 	int fileType = LookupDataFileType(type);
@@ -318,6 +371,8 @@ static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, 
 
 	std::tie(typeName, fileName) = dataFile;
 
+	trace("%s %s %s.\n", op, typeName, fileName);
+
 	CDataFileMountInterface* mounter = LookupDataFileMounter(typeName);
 
 	if (mounter == nullptr)
@@ -328,7 +383,7 @@ static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, 
 
 	if (mounter)
 	{
-		std::string typeName = typeid(*mounter).name();
+		std::string className = typeid(*mounter).name();
 
 		DataFileEntry entry;
 		memset(&entry, 0, sizeof(entry));
@@ -338,20 +393,16 @@ static void HandleDataFile(const std::pair<std::string, std::string>& dataFile, 
 		bool result = SafeCall([&]()
 		{
 			return fn(mounter, entry);
-		}, va("%s of %s in data file mounter %s", op, fileName, typeName));
+		}, va("%s of %s in data file mounter %s", op, fileName, className));
 
 		if (result)
 		{
-			trace("done %s %s in data file mounter %s.\n", op, fileName, typeName);
+			trace("done %s %s in data file mounter %s.\n", op, fileName, className);
 		}
 		else
 		{
-			trace("failed %s %s in data file mounter %s.\n", op, fileName, typeName);
+			trace("failed %s %s in data file mounter %s.\n", op, fileName, className);
 		}
-	}
-	else
-	{
-		trace("%s %s failed (no mounter for type %s)\n", op, fileName, typeName);
 	}
 }
 
@@ -436,7 +487,7 @@ static void UnloadDataFiles()
 
 static hook::cdecl_stub<void()> _unloadMultiplayerContent([]()
 {
-	return hook::get_pattern("BA 79 91 C8 BC C6 05 ? ? ? ? 01 E8", -0xB);
+	return hook::get_pattern("01 E8 ? ? ? ? 48 8B 0D ? ? ? ? BA 79", -0x11);
 });
 
 #include <GameInit.h>
@@ -509,15 +560,15 @@ static HookFunction hookFunction([] ()
 	}
 
 	{
-		char* location = hook::get_pattern<char>("E2 99 8F 57 C6 05 ? ? ? ? 00 E8", -0xC);
+		char* location = hook::get_pattern<char>("79 91 C8 BC E8 ? ? ? ? 48 8D", -0x30);
 
-		location += 7;
+		location += 0x1A;
 		g_extraContentManager = (void**)(*(int32_t*)location + location + 4);
-		location -= 7;
+		location -= 0x1A;
 
-		hook::set_call(&g_disableContentGroup, location + 0x17);
-		hook::set_call(&g_enableContentGroup, location + 0x28);
-		hook::set_call(&g_clearContentCache, location + 0x33);
+		hook::set_call(&g_disableContentGroup, location + 0x23);
+		hook::set_call(&g_enableContentGroup, location + 0x34);
+		hook::set_call(&g_clearContentCache, location + 0x50);
 	}
 
 	rage::OnInitFunctionEnd.Connect([](rage::InitFunctionType type)

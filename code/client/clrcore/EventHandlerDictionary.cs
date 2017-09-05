@@ -1,7 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CitizenFX.Core
@@ -35,14 +37,14 @@ namespace CitizenFX.Core
             this[key] += value;
         }
 
-        internal void Invoke(string eventName, object[] arguments)
+        internal async Task Invoke(string eventName, string sourceString, object[] arguments)
         {
             var lookupKey = eventName.ToLower();
             EventHandlerEntry entry;
             
             if (TryGetValue(lookupKey, out entry))
             {
-                entry.Invoke(arguments);
+                await entry.Invoke(sourceString, arguments);
             }
         }
     }
@@ -71,7 +73,7 @@ namespace CitizenFX.Core
             return entry;
         }
 
-        internal void Invoke(params object[] args)
+        internal async Task Invoke(string sourceString, params object[] args)
         {
             var callbacks = m_callbacks.ToArray();
 
@@ -79,19 +81,13 @@ namespace CitizenFX.Core
             {
                 try
                 {
-					var paras = callback.Method.GetParameters();
-					var passArgs = args;
+					var passArgs = CallUtilities.GetPassArguments(callback.Method, args, sourceString);
+					var rv = callback.DynamicInvoke(passArgs);
 
-					if (passArgs.Length < paras.Length)
+					if (rv != null && rv is Task task)
 					{
-						passArgs = passArgs.Concat(new object[paras.Length - passArgs.Length]).ToArray();
+						await task;
 					}
-					else
-					{
-						passArgs = passArgs.Take(paras.Length).ToArray();
-					}
-
-                    callback.DynamicInvoke(passArgs);
                 }
                 catch (Exception e)
                 {
@@ -102,4 +98,72 @@ namespace CitizenFX.Core
             }
         }
     }
+
+	static class CallUtilities
+	{
+		public static object[] GetPassArguments(MethodInfo method, object[] args, string sourceString)
+		{
+			List<object> passArgs = new List<object>();
+
+			var argIdx = 0;
+
+			object ChangeType(object value, Type type)
+			{
+				if (type.IsAssignableFrom(value.GetType()))
+				{
+					return value;
+				}
+				else if (value is IConvertible)
+				{
+					return Convert.ChangeType(value, type);
+				}
+
+				throw new InvalidCastException($"Could not cast event argument from {value.GetType().Name} to {type.Name}");
+			}
+
+			object Default(Type type) => type.IsValueType ? Activator.CreateInstance(type) : null;
+
+			foreach (var info in method.GetParameters())
+			{
+				var type = info.ParameterType;
+
+				if (info.GetCustomAttribute<FromSourceAttribute>() != null)
+				{
+					// empty source -> default
+					if (string.IsNullOrWhiteSpace(sourceString))
+					{
+						passArgs.Add(Default(type));
+
+						continue;
+					}
+
+#if IS_FXSERVER
+					if (type.IsAssignableFrom(typeof(Player)))
+					{
+						passArgs.Add(new Player(sourceString));
+
+						continue;
+					}
+#endif
+
+					passArgs.Add(ChangeType(sourceString, type));
+				}
+				else
+				{
+					if (argIdx >= args.Length)
+					{
+						passArgs.Add(Default(type));
+					}
+					else
+					{
+						passArgs.Add(ChangeType(args[argIdx], type));
+					}
+
+					argIdx++;
+				}
+			}
+
+			return passArgs.ToArray();
+		}
+	}
 }

@@ -10,7 +10,8 @@ import { GameService } from '../../game.service';
 @Component({
     moduleId: module.id,
     selector: 'app-direct-connect',
-    templateUrl: 'direct-connect.component.html'
+    templateUrl: 'direct-connect.component.html',
+    styleUrls: ['direct-connect.components.scss']
 })
 
 export class DirectConnectComponent implements OnInit, AfterViewInit {
@@ -55,7 +56,7 @@ export class DirectConnectComponent implements OnInit, AfterViewInit {
             const addr = this.addr;
 
             this.onFetchCB = () => {
-                if (addr == this.addr) {
+                if (addr === this.addr) {
                     this.attemptConnect()
                 }
             };
@@ -67,7 +68,6 @@ export class DirectConnectComponent implements OnInit, AfterViewInit {
         this.addr = newValue;
 
         const addrBits: [string, number] = [ '', 30120 ];
-
         const match = newValue.match(/^((?:[^\[: ]+)|\[(?:[a-f0-9:]+)\])(?::([0-9]+)|$)/i);
 
         if (!match)
@@ -79,7 +79,7 @@ export class DirectConnectComponent implements OnInit, AfterViewInit {
         addrBits[0] = match[1];
 
         if (match[2]) {
-            addrBits[1] = parseInt(match[2]);
+            addrBits[1] = parseInt(match[2], 10);
         }
 
         this.addrEvent.next(addrBits);
@@ -96,14 +96,14 @@ export class DirectConnectComponent implements OnInit, AfterViewInit {
     }
 
     isWaiting() {
-        return (this.addr.trim() != '' && ((!this.server && !this.error) || this.lastAddr != this.addr));
+        return (this.addr.trim() !== '' && ((!this.server && !this.error) || this.lastAddr !== this.addr));
     }
 
     isInvalid() {
-        return (this.error && this.lastAddr == this.addr);
+        return (this.error && this.lastAddr === this.addr);
     }
 
     isValid() {
-        return (this.server && !this.error && this.lastAddr == this.addr);
+        return (this.server && !this.error && this.lastAddr === this.addr);
     }
 }

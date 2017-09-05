@@ -1,4 +1,4 @@
-﻿/*
+/*
  * This file is part of the CitizenFX project - http://citizen.re/
  *
  * See LICENSE and MENTIONS in the root of the source tree for information
@@ -111,7 +111,7 @@ struct CollectionData
 	rage::fiDevice* unkDevice;
 	char pad4[16];
 	rage::fiDevice* parentDevice;
-	char pad5[4];
+	uint32_t namePrefixLength;
 	char smallName[32];
 	uint32_t pad6;
 	atArray<char> name;
@@ -345,11 +345,9 @@ public:
 
 		if (parentHandle == -1)
 		{
-			trace("CfxCollection[%s]::AllocateHandle got passed a failed handle for %s\n", GetName(), name);
-
-			if (strcmp(GetName(), "dlc.rpf") != 0)
+			if (!name || strstr(name, "_manifest.ymf") == nullptr)
 			{
-				FatalError("CfxCollection[%s]::AllocateHandle got passed a failed handle for %s\n", GetName(), name);
+				trace("CfxCollection[%s]::AllocateHandle got passed a failed handle for %s\n", GetName(), name);
 			}
 
 			return -1;
@@ -465,7 +463,11 @@ public:
 			}
 			else
 			{
-				g_ignoredStreamingFileSet.insert(entryName);
+				// if _manifest.ymf, don't ignore globally
+				if (stricmp(entryName, "_manifest.ymf") != 0)
+				{
+					g_ignoredStreamingFileSet.insert(entryName);
+				}
 
 				auto rit = g_customStreamingFileRefs.find(entryName);
 
@@ -678,7 +680,9 @@ public:
 	{
 		std::string outFileName;
 
-		if (m_lookupFunction(fileName, outFileName))
+		CollectionData* collectionData = (CollectionData*)m_pad;
+
+		if (m_lookupFunction(fileName + collectionData->namePrefixLength, outFileName))
 		{
 			rage::fiDevice* device = rage::fiDevice::GetDevice(outFileName.c_str(), true);
 			uint64_t handle = device->Open(outFileName.c_str(), readOnly);
@@ -693,7 +697,9 @@ public:
 	{
 		std::string outFileName;
 
-		if (m_lookupFunction(fileName, outFileName))
+		CollectionData* collectionData = (CollectionData*)m_pad;
+
+		if (m_lookupFunction(fileName + collectionData->namePrefixLength, outFileName))
 		{
 			rage::fiDevice* device = rage::fiDevice::GetDevice(outFileName.c_str(), true);
 			uint64_t handle = device->OpenBulk(outFileName.c_str(), ptr);
@@ -1226,9 +1232,7 @@ public:
 	void Mount(const char* mountPoint)
 	{
 		{
-			PseudoCallContext ctx(this);
-
-			reinterpret_cast<rage::fiPackfile*>(ctx.GetPointer())->Mount(mountPoint);
+			reinterpret_cast<rage::fiPackfile*>(this)->Mount(mountPoint);
 		}
 	}
 };
@@ -1911,6 +1915,38 @@ void CfxCollection::PrepareStreamingListFromNetwork()
 	PrepareStreamingListFromList(g_customStreamingFiles);
 }
 
+static std::unordered_map<std::string, CfxCollection*> g_collectionsByTag;
+static std::unordered_map<std::string, uint32_t> g_packHashesByTag;
+
+int GetCollectionIndexByTag(const std::string& tag)
+{
+	auto collection = g_collectionsByTag[tag];
+
+	if (collection)
+	{
+		return collection->GetCollectionId();
+	}
+
+	return -1;
+}
+
+uint32_t GetPackHashByTag(const std::string& tag)
+{
+	return g_packHashesByTag[tag];
+}
+
+void InvalidateCacheByTag(const std::string& tag)
+{
+	auto collection = g_collectionsByTag[tag];
+
+	if (collection)
+	{
+		auto& packfileInfo = g_streamingPackfiles->Get(collection->GetCollectionId());
+
+		packfileInfo.cacheFlags |= 1;
+	}
+}
+
 void CfxCollection::PrepareStreamingListForTag(const char* tag)
 {
 	// parse \ as apparently it expects a real fs path
@@ -1921,6 +1957,29 @@ void CfxCollection::PrepareStreamingListForTag(const char* tag)
 	tagName = tagName.substr(0, tagName.find_last_of('.'));
 
 	PrepareStreamingListFromList(g_customStreamingFilesByTag[tagName]);
+
+	g_collectionsByTag[tagName] = this;
+
+	uint32_t packHash = 0;
+
+	for (auto& f : m_streamingFileList)
+	{
+		auto& resFlags = m_resourceFlags[f];
+
+		packHash += (HashString(f.c_str()));
+		packHash *= 31;
+
+		packHash += (HashString(va("%d %d", resFlags.flag1, resFlags.flag2)));
+		packHash *= 31;
+	}
+
+	auto& packfileInfo = g_streamingPackfiles->Get(GetCollectionId());
+	packfileInfo.modificationTime.dwHighDateTime = 0;
+	packfileInfo.modificationTime.dwLowDateTime = packHash;
+
+	g_packHashesByTag[tagName] = packHash;
+
+	//packfileInfo.nameHash = HashString(va("citizen:/dunno/%s.rpf", tag));
 }
 
 static void(*g_origGeomThing)(void*, void*);
@@ -2109,6 +2168,8 @@ static HookFunction hookFunction([] ()
 {
 	assert(offsetof(CollectionData, name) == 120);
 	assert(offsetof(StreamingPackfileEntry, enabled) == 68);
+
+	static_assert(sizeof(StreamingPackfileEntry) == 104, "SFPE");
 
 	ICoreGameInit* gameInit = Instance<ICoreGameInit>::Get();
 	

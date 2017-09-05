@@ -7,7 +7,12 @@
 
 namespace console
 {
-static std::vector<void (*)(ConsoleChannel, const char*)> g_printListeners;
+static void PrintfTraceListener(ConsoleChannel channel, const char* out)
+{
+	printf("%s", out);
+}
+
+static std::vector<void(*)(ConsoleChannel, const char*)> g_printListeners = { PrintfTraceListener };
 static int g_useDeveloper;
 
 void Printf(ConsoleChannel channel, const char* format, const fmt::ArgList& argList)
@@ -41,7 +46,7 @@ void PrintError(ConsoleChannel channel, const char* format, const fmt::ArgList& 
 	Printf(channel, "^1Error: %s^7", fmt::sprintf(format, argList));
 }
 
-static ConVar<int> developerVariable("developer", ConVar_Archive, 0, &g_useDeveloper);
+static ConVar<int> developerVariable(GetDefaultContext(), "developer", ConVar_Archive, 0, &g_useDeveloper);
 }
 
 extern "C" DLL_EXPORT void CoreAddPrintListener(void(*function)(ConsoleChannel, const char*))

@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace CitizenFX.Core
 {
@@ -16,16 +19,32 @@ namespace CitizenFX.Core
 
 		public static IScriptHost ScriptHost { get; private set; }
 
+		[SecuritySafeCritical]
 		public InternalManager()
 		{
+			//CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+			//CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+
+			Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
+			Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
+
 			InitializeAssemblyResolver();
 			CitizenTaskScheduler.Create();
+
+			SynchronizationContext.SetSynchronizationContext(new CitizenSynchronizationContext());
 		}
 
 		[SecuritySafeCritical]
-		public void SetScriptHost(IntPtr host, int instanceId)
+		public void SetScriptHost(IScriptHost host, int instanceId)
 		{
-			ScriptHost = (IScriptHost)Marshal.GetObjectForIUnknown(host);
+			ScriptHost = host;
+			ms_instanceId = instanceId;
+		}
+
+		[SecuritySafeCritical]
+		public void SetScriptHost(IntPtr hostPtr, int instanceId)
+		{
+			ScriptHost = (IScriptHost)Marshal.GetObjectForIUnknown(hostPtr);
 			ms_instanceId = instanceId;
 		}
 
@@ -105,14 +124,22 @@ namespace CitizenFX.Core
 				}
 				catch
 				{
-					// nothing
+					try
+					{
+						var symbolStream = new BinaryReader(new FxStreamWrapper(ScriptHost.OpenHostFile(name + ".pdb")));
+						symbolBytes = symbolStream.ReadBytes((int)symbolStream.BaseStream.Length);
+					}
+					catch
+					{
+						// nothing
+					}
 				}
 
 				return CreateAssemblyInternal(assemblyBytes, symbolBytes);
 			}
-			catch
+			catch (Exception e)
 			{
-				// ignored
+				Debug.WriteLine($"Exception loading assembly {name}: {e}");
 			}
 
 			return null;
@@ -153,6 +180,7 @@ namespace CitizenFX.Core
 				}
 
 				CitizenTaskScheduler.Instance.Tick();
+				CitizenSynchronizationContext.Tick();
 			}
 			catch (Exception e)
 			{
@@ -169,12 +197,25 @@ namespace CitizenFX.Core
 				var obj = MsgPackDeserializer.Deserialize(argsSerialized) as List<object> ?? (IEnumerable<object>)new object[0];
 
 				var scripts = ms_definedScripts.ToArray();
+
+				// TODO: store source someplace
 				var objArray = obj.ToArray();
 
 				foreach (var script in scripts)
 				{
-					script.EventHandlers.Invoke(eventName, objArray);
+					Task.Factory.StartNew(() => script.EventHandlers.Invoke(eventName, sourceString, objArray)).Unwrap().ContinueWith(a =>
+					{
+						if (a.IsFaulted)
+						{
+							Debug.WriteLine($"Error invoking event handlers for {eventName}: {a.Exception?.InnerExceptions.Aggregate("", (b, s) => s + b.ToString() + "\n")}");
+						}
+					});
 				}
+
+				ExportDictionary.Invoke(eventName, objArray);
+
+				// invoke a single task tick
+				CitizenTaskScheduler.Instance.Tick();
 			}
 			catch (Exception e)
 			{

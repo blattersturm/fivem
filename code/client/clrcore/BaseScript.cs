@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security;
@@ -23,7 +23,8 @@ namespace CitizenFX.Core
 
         protected ExportDictionary Exports { get; private set; }
 
-        private Player m_player;
+#if !IS_FXSERVER
+		private Player m_player;
 
         protected Player LocalPlayer
         {
@@ -39,14 +40,16 @@ namespace CitizenFX.Core
                 return m_player;
             }
         }
+#endif
 
-        protected PlayerList Players { get; private set; }
+		protected PlayerList Players { get; private set; }
 
 	    protected BaseScript()
         {
             EventHandlers = new EventHandlerDictionary();
             Exports = new ExportDictionary();
             CurrentTaskList = new Dictionary<Delegate, Task>();
+
             Players = new PlayerList();
         }
         
@@ -67,7 +70,7 @@ namespace CitizenFX.Core
         {
             if (!CurrentTaskList.ContainsKey(call))
             {
-                CurrentTaskList.Add(call, CitizenTaskScheduler.Factory.StartNew((Func<Task>)call).Unwrap().ContinueWith(a =>
+                CurrentTaskList.Add(call, Task.Factory.StartNew((Func<Task>)call).Unwrap().ContinueWith(a =>
 				{
 					if (a.IsFaulted)
 					{
@@ -89,7 +92,7 @@ namespace CitizenFX.Core
         /// <returns>An awaitable task.</returns>
         public static Task Delay(int msecs)
         {
-            return CitizenTaskScheduler.Factory.FromAsync(BeginDelay, EndDelay, msecs, null);
+            return Task.Factory.FromAsync(BeginDelay, EndDelay, msecs, null);
         }
 
         [SecuritySafeCritical]
@@ -100,20 +103,52 @@ namespace CitizenFX.Core
             TriggerEventInternal(eventName, argsSerialized, false);
         }
 
-        [SecuritySafeCritical]
+#if !IS_FXSERVER
+		[SecuritySafeCritical]
         public static void TriggerServerEvent(string eventName, params object[] args)
         {
             var argsSerialized = MsgPackSerializer.Serialize(args);
 
             TriggerEventInternal(eventName, argsSerialized, true);
         }
+#else
+		public static void TriggerClientEvent(Player player, string eventName, params object[] args)
+		{
+			player.TriggerEvent(eventName, args);
+		}
 
-        [SecurityCritical]
+		/// <summary>
+		/// Broadcasts an event to all connected players.
+		/// </summary>
+		/// <param name="eventName">The name of the event.</param>
+		/// <param name="args">Arguments to pass to the event.</param>
+		public static void TriggerClientEvent(string eventName, params object[] args)
+		{
+			var argsSerialized = MsgPackSerializer.Serialize(args);
+
+			unsafe
+			{
+				fixed (byte* serialized = &argsSerialized[0])
+				{
+					Function.Call(Hash.TRIGGER_CLIENT_EVENT_INTERNAL, eventName, "-1", serialized, argsSerialized.Length);
+				}
+			}
+		}
+#endif
+
+		[SecurityCritical]
         private static void TriggerEventInternal(string eventName, byte[] argsSerialized, bool isRemote)
         {
-            var nativeHash = (isRemote) ? Hash.TRIGGER_SERVER_EVENT_INTERNAL : Hash.TRIGGER_EVENT_INTERNAL;
+			var nativeHash = Hash.TRIGGER_EVENT_INTERNAL;
 
-            unsafe
+#if !IS_FXSERVER
+			if (isRemote)
+			{
+				nativeHash = Hash.TRIGGER_SERVER_EVENT_INTERNAL;
+			}
+#endif
+
+			unsafe
             {
                 fixed (byte* serialized = &argsSerialized[0])
                 {

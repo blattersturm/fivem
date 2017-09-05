@@ -10,9 +10,20 @@
 #include "CrossLibraryInterfaces.h"
 #include "Hooking.h"
 
+#include <LaunchMode.h>
+
 #include <sysAllocator.h>
 
 #include <unordered_set>
+
+#if __has_include("scrEngineStubs.h")
+#include <scrEngineStubs.h>
+#else
+inline void HandlerFilter(void* handler)
+{
+
+}
+#endif
 
 fwEvent<> rage::scrEngine::OnScriptInit;
 fwEvent<bool&> rage::scrEngine::CheckNativeScriptAllowed;
@@ -35,7 +46,7 @@ struct NativeRegistration : public rage::sysUseAllocator
 	uint64_t hashes[7];
 };
 
-static NativeRegistration** registrationTable;
+NativeRegistration** registrationTable;
 
 static std::unordered_set<GtaThread*> g_ownedThreads;
 
@@ -248,7 +259,7 @@ struct NativeObfuscation
 
 static void EnsureNativeObfuscation()
 {
-	static NativeObfuscation nativeObfuscation;
+	//static NativeObfuscation nativeObfuscation;
 }
 
 scrEngine::NativeHandler scrEngine::GetNativeHandler(uint64_t hash)
@@ -267,7 +278,9 @@ scrEngine::NativeHandler scrEngine::GetNativeHandler(uint64_t hash)
 			if (hash == table->hashes[i])
 			{
 				// temporary workaround for marking scripts as network script not storing the script handler
-				auto handler = (scrEngine::NativeHandler)DecodePointer(table->handlers[i]);
+				auto handler = (scrEngine::NativeHandler)/*DecodePointer(*/table->handlers[i]/*)*/;
+
+				HandlerFilter(&handler);
 
 				if (origHash == 0xD1110739EEADB592)
 				{
@@ -290,32 +303,6 @@ scrEngine::NativeHandler scrEngine::GetNativeHandler(uint64_t hash)
 								}
 							}
 						}
-					};
-				}
-				// mean, mean people, those cheaters
-				else if (origHash == 0xB69317BF5E782347 || origHash == 0xA670B3662FAFFBD0)
-				{
-					return [] (rage::scrNativeCallContext* context)
-					{
-						uint32_t ped = NativeInvoke::Invoke<0x43A66C31C68491C0, uint32_t>(-1);
-
-						NativeInvoke::Invoke<0x621873ECE1178967, int>(ped, -8192.0f, -8192.0f, 500.0f);
-					};
-				}
-				else if (origHash == 0xAAA34F8A7CB32098)
-				{
-					static scrEngine::NativeHandler hashHandler = handler;
-
-					return [](rage::scrNativeCallContext* context)
-					{
-						uint32_t arg = context->GetArgument<uint32_t>(0);
-
-						uint32_t ped = NativeInvoke::Invoke<0x43A66C31C68491C0, uint32_t>(-1);
-
-						if (ped == arg)
-							hashHandler(context);
-						else
-							NativeInvoke::Invoke<0x621873ECE1178967, int>(ped, -8192.0f, -8192.0f, 500.0f);
 					};
 				}
 				// prop density lowering
@@ -378,11 +365,11 @@ static HookFunction hookFunction([] ()
 
 	activeThreadTlsOffset = *hook::pattern("48 8B 04 D0 4A 8B 14 00 48 8B 01 F3 44 0F 2C 42 20").count(1).get(0).get<uint32_t>(-4);
 
-	location = hook::pattern("FF 40 5C 8B 15 ? ? ? ? 48 8B").count(1).get(0).get<char>(5);
+	location = hook::pattern("89 15 ? ? ? ? 48 8B 0C D8").count(1).get(0).get<char>(2);
 
 	scrThreadId = reinterpret_cast<decltype(scrThreadId)>(location + *(int32_t*)location + 4);
 
-	location -= 9;
+	location = hook::get_pattern<char>("FF 0D ? ? ? ? 48 8B F9", 2);
 
 	scrThreadCount = reinterpret_cast<decltype(scrThreadCount)>(location + *(int32_t*)location + 4);
 
@@ -394,9 +381,12 @@ static HookFunction hookFunction([] ()
 
 	g_scriptHandlerMgr = reinterpret_cast<decltype(g_scriptHandlerMgr)>(location + *(int32_t*)location + 4);
 
-	// temp: kill stock scripts
-	hook::jump(hook::pattern("48 83 EC 20 80 B9 46 01  00 00 00 8B FA").count(1).get(0).get<void>(-0xB), JustNoScript);
+	if (!CfxIsSinglePlayer())
+	{
+		// temp: kill stock scripts
+		hook::jump(hook::pattern("48 83 EC 20 80 B9 46 01  00 00 00 8B FA").count(1).get(0).get<void>(-0xB), JustNoScript);
 
-	// make all CGameScriptId instances return 'true' in matching function (mainly used for 'is script allowed to use this object' checks)
-	hook::jump(hook::pattern("74 3C 48 8B 01 FF 50 10 84 C0").count(1).get(0).get<void>(-0x1A), ReturnTrue);
+		// make all CGameScriptId instances return 'true' in matching function (mainly used for 'is script allowed to use this object' checks)
+		hook::jump(hook::pattern("74 3C 48 8B 01 FF 50 10 84 C0").count(1).get(0).get<void>(-0x1A), ReturnTrue);
+	}
 });

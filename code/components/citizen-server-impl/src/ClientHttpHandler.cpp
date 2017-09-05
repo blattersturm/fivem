@@ -21,6 +21,23 @@ namespace fx
 		m_methods.insert({ method, handler });
 	}
 
+	void ClientMethodRegistry::AddAfterFilter(const std::string& method, const TFilter& handler)
+	{
+		auto it = m_methods.find(method);
+
+		assert(it != m_methods.end());
+
+		auto lastValue = it->second;
+
+		it->second = [=](const std::map<std::string, std::string>& a1, const fwRefContainer<net::HttpRequest>& a2, const TCallback& a3)
+		{
+			lastValue(a1, a2, [=](const json& data)
+			{
+				handler(data, a1, a2, a3);
+			});
+		};
+	}
+
 	std::map<std::string, std::string> ParsePOSTString(const std::string_view& postDataString)
 	{
 		std::map<std::string, std::string> postMap;
@@ -92,9 +109,10 @@ namespace fx
 					return;
 				}
 
-				json data = (*handler)(postMap, request);
-
-				response->End(data.dump());
+				(*handler)(postMap, request, [=](const json& data)
+				{
+					response->End(data.dump());
+				});
 			});
 		};
 	}

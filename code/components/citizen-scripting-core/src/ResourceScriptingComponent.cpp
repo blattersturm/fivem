@@ -94,7 +94,7 @@ ResourceScriptingComponent::ResourceScriptingComponent(Resource* resource)
 			}
 		}
 
-		if (!m_scriptRuntimes.empty())
+		if (!m_scriptRuntimes.empty() || m_resource->GetName() == "_cfx_internal")
 		{
 			CreateEnvironments();
 		}
@@ -172,7 +172,7 @@ void ResourceScriptingComponent::CreateEnvironments()
 
 					if (FX_FAILED(hr))
 					{
-						trace("Failed to load client script %s.\n", clientScript.second.c_str());
+						trace("Failed to load script %s.\n", clientScript.second.c_str());
 					}
 				}
 			}

@@ -22,8 +22,10 @@ namespace CitizenFX.Core
 		{
 			//CleanUp();
 
-			m_context = new fxScriptContext();
-			m_context.functionData = new byte[32 * 8];
+			m_context = new fxScriptContext
+			{
+				functionData = new byte[32 * 8]
+			};
 		}
 
 		[SecuritySafeCritical]
@@ -117,6 +119,11 @@ namespace CitizenFX.Core
 				var buffer = new byte[len];
 				Marshal.Copy(nativeUtf8, buffer, 0, buffer.Length);
 				return Encoding.UTF8.GetString(buffer);
+			}
+
+			if (type.IsEnum)
+			{
+				return Enum.ToObject(type, (int)GetResult(typeof(int), ptr));
 			}
 
 			if (type.IsAssignableFrom(typeof(INativeValue)))

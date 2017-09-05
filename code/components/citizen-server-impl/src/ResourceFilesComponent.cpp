@@ -115,6 +115,17 @@ namespace fi
 
 			inline void AddFile(const std::string& fileName, const std::string& backingFile)
 			{
+				// check if the file is readable
+				{
+					auto backingStream = vfs::OpenRead(backingFile);
+
+					if (!backingStream.GetRef())
+					{
+						return;
+					}
+				}
+
+				// continue
 				std::string_view sv = fileName;
 				int pos = sv.find_first_of("/\\");
 
@@ -232,6 +243,7 @@ namespace fi
 					writer.WriteMark<uint32_t>("fOff_" + m_fullName, writer.Tell());
 
 					auto backingStream = vfs::OpenRead(m_backingFile);
+
 					writer.WriteMark<uint32_t>("fLen_" + m_fullName, backingStream->GetLength());
 					writer.WriteMark<uint32_t>("fLen2_" + m_fullName, backingStream->GetLength());
 
@@ -320,6 +332,8 @@ namespace fi
 		inline bool Write(const std::string& outFileName)
 		{
 			fwRefContainer<vfs::Device> device = vfs::GetDevice(outFileName);
+			device->CreateDirectory(outFileName.substr(0, outFileName.find_last_of('/')));
+
 			auto handle = device->Create(outFileName);
 
 			if (handle == INVALID_DEVICE_HANDLE)
@@ -463,6 +477,21 @@ namespace fx
 	std::map<std::string, std::string> ResourceFilesComponent::GetFileHashPairs()
 	{
 		return m_fileHashPairs;
+	}
+
+	std::shared_ptr<ResourceFilesFilter> ResourceFilesComponent::CreateFilesFilter(const std::string& file, const fwRefContainer<fwRefCountable>& context)
+	{
+		if (m_filesFilter)
+		{
+			return m_filesFilter(m_resource->GetName(), file, context);
+		}
+
+		return {};
+	}
+
+	void ResourceFilesComponent::SetFilesFilter(const TFilesFilterFactory& filter)
+	{
+		m_filesFilter = filter;
 	}
 
 	void ResourceFilesComponent::AttachToObject(fx::Resource* object)

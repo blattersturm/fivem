@@ -13,10 +13,10 @@
 #include <mmsystem.h>
 #include <yaml-cpp/yaml.h>
 #include <SteamComponentAPI.h>
+#include <LegitimacyAPI.h>
 
 #include <Error.h>
 
-std::unique_ptr<NetLibraryImplBase> CreateNetLibraryImplV1(INetLibraryInherit* base);
 std::unique_ptr<NetLibraryImplBase> CreateNetLibraryImplV2(INetLibraryInherit* base);
 
 inline ISteamComponent* GetSteam()
@@ -515,7 +515,7 @@ struct GetAuthSessionTicketResponse_t
 	int m_eResult;
 };
 
-void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
+void NetLibrary::ConnectToServer(const net::PeerAddress& address)
 {
 	if (m_connectionState != CS_IDLE)
 	{
@@ -557,10 +557,11 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 		}
 	} es(this);
 
+	m_currentServer = NetAddress(address.GetSocketAddress());
+	m_currentServerPeer = address;
 	m_connectionState = CS_INITING;
-	m_currentServer = NetAddress(hostname, port);
 
-	AddCrashometry("last_server", "%s:%d", hostname, port);
+	AddCrashometry("last_server", "%s", address.ToString());
 
 	if (m_impl)
 	{
@@ -569,13 +570,6 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 
 	m_outSequence = 0;
 
-	wchar_t wideHostname[256];
-	mbstowcs(wideHostname, hostname, _countof(wideHostname) - 1);
-
-	wideHostname[255] = L'\0';
-
-	fwWString wideHostnameStr = wideHostname;
-
 	static fwMap<fwString, fwString> postMap;
 	postMap["method"] = "initConnect";
 	postMap["name"] = GetPlayerName();
@@ -583,13 +577,16 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 
 	static std::function<void()> performRequest;
 
-	uint16_t capturePort = port;
-
 	postMap["guid"] = va("%lld", GetGUID());
 
 	static fwAction<bool, const char*, size_t> handleAuthResult;
 	handleAuthResult = [=] (bool result, const char* connDataStr, size_t size) mutable
 	{
+		if (m_connectionState != CS_INITING)
+		{
+			return;
+		}
+
 		OnConnectionProgress("Handshaking...", 0, 100);
 
 		std::string connData(connDataStr, size);
@@ -609,6 +606,25 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 		{
 			auto node = YAML::Load(connData);
 
+			if (node["token"].IsDefined())
+			{
+				m_token = node["token"].as<std::string>();
+			}
+
+			if (node["defer"].IsDefined())
+			{
+				OnConnectionProgress(node["status"].as<std::string>(), 133, 133);
+
+				static fwMap<fwString, fwString> newMap;
+				newMap["method"] = "getDeferState";
+				newMap["guid"] = va("%lld", GetGUID());
+				newMap["token"] = m_token;
+
+				m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), newMap, handleAuthResult);
+
+				return;
+			}
+
 			if (node["error"].IsDefined())
 			{
 				// FIXME: single quotes
@@ -627,11 +643,23 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 				m_connectionState = CS_IDLE;
 				return;
 			}
-			else Instance<ICoreGameInit>::Get()->ShAllowed = node["sH"].as<bool>(true);
+			else
+			{
+				Instance<ICoreGameInit>::Get()->ShAllowed = node["sH"].as<bool>(true);
+			}
+
+			m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/policy/shdisable?server=%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
+			{
+				if (success)
+				{
+					if (std::string(data, length).find("yes") != std::string::npos)
+					{
+						Instance<ICoreGameInit>::Get()->ShAllowed = false;
+					}
+				}
+			});
 
 			Instance<ICoreGameInit>::Get()->EnhancedHostSupport = (node["enhancedHostSupport"].IsDefined() && node["enhancedHostSupport"].as<bool>(false));
-
-			m_token = node["token"].as<std::string>();
 
 			m_serverProtocol = node["protocol"].as<uint32_t>();
 
@@ -650,86 +678,129 @@ void NetLibrary::ConnectToServer(const char* hostname, uint16_t port)
 			}
 			else
 			{
-				m_impl = CreateNetLibraryImplV1(this);
+				OnConnectionError("Legacy servers are incompatible with this version of FiveM. Please tell the server owner to the server to the latest FXServer build. See https://fivem.net/ for more info.");
+				m_connectionState = CS_IDLE;
+				return;
 			}
 		}
-		catch (YAML::Exception&)
+		catch (YAML::Exception& e)
 		{
+			OnConnectionError(e.what());
 			m_connectionState = CS_IDLE;
 		}
 	};
 
 	performRequest = [=]()
 	{
-		m_httpClient->DoPostRequest(wideHostname, port, L"/client", postMap, handleAuthResult);
+		m_httpClient->DoPostRequest(fmt::sprintf("http://%s/client", address.ToString()), postMap, handleAuthResult);
 	};
 
-
-	auto steamComponent = GetSteam();
-
-	if (steamComponent)
+	m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/blacklist/%s_%d", address.GetHost(), address.GetPort()), [=](bool success, const char* data, size_t length)
 	{
-		static uint32_t ticketLength;
-		static uint8_t ticketBuffer[4096];
-
-		static int lastCallback = -1;
-
-		IClientEngine* steamClient = steamComponent->GetPrivateClient();
-
-		InterfaceMapper steamUtils(steamClient->GetIClientUtils(steamComponent->GetHSteamPipe(), "CLIENTUTILS_INTERFACE_VERSION001"));
-		InterfaceMapper steamUser(steamClient->GetIClientUser(steamComponent->GetHSteamUser(), steamComponent->GetHSteamPipe(), "CLIENTUSER_INTERFACE_VERSION001"));
-
-		if (steamUser.IsValid())
+		if (success)
 		{
-			auto removeCallback = []()
+			FatalError("This server has been blocked from the FiveM platform. Stated reason: %sIf you manage this server and you feel this is not justified, please contact your Technical Account Manager.", std::string(data, length));
+		}
+	});
+
+	m_httpClient->DoGetRequest(fmt::sprintf("https://runtime.fivem.net/blacklist/%s", address.GetHost()), [=](bool success, const char* data, size_t length)
+	{
+		if (success)
+		{
+			FatalError("This server has been blocked from the FiveM platform. Stated reason: %sIf you manage this server and you feel this is not justified, please contact your Technical Account Manager.", std::string(data, length));
+		}
+	});
+
+	auto continueRequest = [=]()
+	{
+		auto steamComponent = GetSteam();
+
+		if (steamComponent)
+		{
+			static uint32_t ticketLength;
+			static uint8_t ticketBuffer[4096];
+
+			static int lastCallback = -1;
+
+			IClientEngine* steamClient = steamComponent->GetPrivateClient();
+
+			InterfaceMapper steamUtils(steamClient->GetIClientUtils(steamComponent->GetHSteamPipe(), "CLIENTUTILS_INTERFACE_VERSION001"));
+			InterfaceMapper steamUser(steamClient->GetIClientUser(steamComponent->GetHSteamUser(), steamComponent->GetHSteamPipe(), "CLIENTUSER_INTERFACE_VERSION001"));
+
+			if (steamUser.IsValid())
 			{
-				if (lastCallback != -1)
+				auto removeCallback = []()
 				{
-					GetSteam()->RemoveSteamCallback(lastCallback);
-					lastCallback = -1;
-				}
-			};
+					if (lastCallback != -1)
+					{
+						GetSteam()->RemoveSteamCallback(lastCallback);
+						lastCallback = -1;
+					}
+				};
 
-			removeCallback();
-
-			lastCallback = steamComponent->RegisterSteamCallback<GetAuthSessionTicketResponse_t>([=](GetAuthSessionTicketResponse_t* response)
-			{
 				removeCallback();
 
-				if (response->m_eResult != 1) // k_EResultOK
+				lastCallback = steamComponent->RegisterSteamCallback<GetAuthSessionTicketResponse_t>([=](GetAuthSessionTicketResponse_t* response)
 				{
-					OnConnectionError(va("Failed to obtain Steam ticket, EResult %d.", response->m_eResult));
-				}
-				else
-				{
-					// encode the ticket buffer
-					char outHex[16384];
-					tohex(ticketBuffer, ticketLength, outHex, sizeof(outHex));
+					removeCallback();
 
-					postMap["authTicket"] = outHex;
+					if (response->m_eResult != 1) // k_EResultOK
+					{
+						OnConnectionError(va("Failed to obtain Steam ticket, EResult %d.", response->m_eResult));
+					}
+					else
+					{
+						// encode the ticket buffer
+						char outHex[16384];
+						tohex(ticketBuffer, ticketLength, outHex, sizeof(outHex));
 
-					performRequest();
-				}
-			});
+						postMap["authTicket"] = outHex;
 
-			int appID = steamUtils.Invoke<int>("GetAppID");
+						performRequest();
+					}
+				});
 
-			trace("Getting auth ticket for pipe appID %d - should be 218.\n", appID);
+				int appID = steamUtils.Invoke<int>("GetAppID");
 
-			steamUser.Invoke<int>("GetAuthSessionTicket", ticketBuffer, (int)sizeof(ticketBuffer), &ticketLength);
+				trace("Getting auth ticket for pipe appID %d - should be 218.\n", appID);
 
-			OnConnectionProgress("Obtaining Steam ticket...", 0, 100);
+				steamUser.Invoke<int>("GetAuthSessionTicket", ticketBuffer, (int)sizeof(ticketBuffer), &ticketLength);
+
+				OnConnectionProgress("Obtaining Steam ticket...", 0, 100);
+			}
+			else
+			{
+				performRequest();
+			}
 		}
 		else
 		{
 			performRequest();
 		}
-	}
-	else
+	};
+
+	m_httpClient->DoPostRequest("https://lambda.fivem.net/api/ticket/create", { { "token", ros::GetEntitlementSource() }, { "server", address.ToString() }, { "guid", fmt::sprintf("%lld", GetGUID()) } }, [=](bool success, const char* data, size_t dataLen)
 	{
-		performRequest();
+		if (success)
+		{
+			auto node = YAML::Load(std::string(data, dataLen));
+
+			if (node["ticket"].IsDefined())
+			{
+				postMap["cfxTicket"] = node["ticket"].as<std::string>();
+			}
+		}
+
+		continueRequest();
+	});
+}
+
+void NetLibrary::CancelDeferredConnection()
+{
+	if (m_connectionState == CS_INITING)
+	{
+		m_connectionState = CS_IDLE;
 	}
-	
 }
 
 void NetLibrary::Disconnect(const char* reason)
@@ -845,11 +916,11 @@ void NetLibrary::SendData(const NetAddress& address, const char* data, size_t le
 	m_impl->SendData(address, data, length);
 }
 
-void NetLibrary::AddReliableHandler(const char* type, ReliableHandlerType function)
+void NetLibrary::AddReliableHandler(const char* type, const ReliableHandlerType& function)
 {
 	uint32_t hash = HashRageString(type);
 
-	m_reliableHandlers.insert(std::make_pair(hash, function));
+	m_reliableHandlers.insert({ hash, function });
 }
 
 void NetLibrary::DownloadsComplete()

@@ -63,7 +63,6 @@ static void RenderDrawListInternal(DrawList* drawList)
 		}
 		else
 		{
-			// TODO: cliprect
 			SetTextureGtaIm((rage::grcTexture*)cmd.TextureId);
 
 			PushDrawBlitImShader();
@@ -80,6 +79,15 @@ static void RenderDrawListInternal(DrawList* drawList)
 
 			idxOff += cmd.ElemCount;
 
+			// set scissor rects here, as they might be overwritten by a matrix push
+			D3D11_RECT scissorRect;
+			scissorRect.left = cmd.ClipRect.x;
+			scissorRect.top = cmd.ClipRect.y;
+			scissorRect.right = cmd.ClipRect.z;
+			scissorRect.bottom = cmd.ClipRect.w;
+
+			GetD3D11DeviceContext()->RSSetScissorRects(1, &scissorRect);
+
 			DrawImVertices();
 
 			PopDrawBlitImShader();
@@ -93,6 +101,16 @@ static void RenderDrawListInternal(DrawList* drawList)
 	SetDepthStencilState(oldDepthStencilState);
 
 	delete drawList;
+
+	{
+		D3D11_RECT scissorRect;
+		scissorRect.left = 0.0f;
+		scissorRect.top = 0.0f;
+		scissorRect.right = 1.0f;
+		scissorRect.bottom = 1.0f;
+
+		GetD3D11DeviceContext()->RSSetScissorRects(1, &scissorRect);
+	}
 }
 
 static void RenderDrawLists(ImDrawData* drawData)
@@ -174,6 +192,7 @@ static InitFunction initFunction([] ()
 	io.KeyMap[ImGuiKey_Y] = 'Y';
 	io.KeyMap[ImGuiKey_Z] = 'Z';
 
+	io.IniFilename = nullptr;
 	io.RenderDrawListsFn = RenderDrawLists;  // Alternatively you can set this to NULL and call ImGui::GetDrawData() after ImGui::Render() to get the same ImDrawData pointer.
 	//io.ImeWindowHandle = g_hWnd;
 
@@ -291,6 +310,9 @@ static InitFunction initFunction([] ()
 			// You can also use ToAscii()+GetKeyboardState() to retrieve characters.
 			if (wParam > 0 && wParam < 0x10000)
 				io.AddInputCharacter((unsigned short)wParam);
+			pass = false;
+			break;
+		case WM_INPUT:
 			pass = false;
 			break;
 		}

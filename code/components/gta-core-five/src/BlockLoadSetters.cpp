@@ -15,7 +15,14 @@
 #include <GameInit.h>
 #include <nutsnbolts.h>
 
+#include <CoreConsole.h>
+#include <console/OptionTokenizer.h>
+
+#include <se/Security.h>
+
 #include <Error.h>
+
+#include <LaunchMode.h>
 
 static hook::cdecl_stub<void()> lookAlive([] ()
 {
@@ -50,8 +57,18 @@ static hook::cdecl_stub<void()> runCriticalSystemServicing([]()
 	return hook::get_call(hook::get_pattern("48 8D 0D ? ? ? ? BA 32 00 00 00 E8", 17));
 });
 
+static std::vector<ProgramArguments> g_argumentList;
+
 static void WaitForInitLoop()
 {
+	// run command-line initialization
+	se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+	for (const auto& bit : g_argumentList)
+	{
+		console::GetDefaultContext()->ExecuteSingleCommandDirect(bit);
+	}
+
 	// run our loop
 	g_isInInitLoop = true;
 
@@ -142,6 +159,7 @@ void FiveGameInit::LoadGameFirstLaunch(bool(*callBeforeLoad)())
 	OnKillNetwork.Connect([=] (const char* message)
 	{
 		AddCrashometry("kill_network", "true");
+		AddCrashometry("kill_network_msg", message);
 
 		trace("Killing network: %s\n", message);
 
@@ -1115,8 +1133,61 @@ static void SafeRun(const T&& func)
 	}
 }
 
+static InitFunction initFunction([]()
+{
+	// initialize console arguments
+	std::vector<std::pair<std::string, std::string>> setList;
+
+	auto commandLine = GetCommandLineW();
+
+	{
+		wchar_t* s = commandLine;
+
+		if (*s == L'"')
+		{
+			++s;
+			while (*s)
+			{
+				if (*s++ == L'"')
+				{
+					break;
+				}
+			}
+		}
+		else
+		{
+			while (*s && *s != L' ' && *s != L'\t')
+			{
+				++s;
+			}
+		}
+		
+		while (*s == L' ' || *s == L'\t')
+		{
+			s++;
+		}
+
+		try
+		{
+			std::tie(g_argumentList, setList) = TokenizeCommandLine(ToNarrow(s));
+		}
+		catch (std::runtime_error& e)
+		{
+			trace("couldn't parse command line: %s\n", e.what());
+		}
+	}
+
+	se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+	for (const auto& set : setList)
+	{
+		console::GetDefaultContext()->ExecuteSingleCommandDirect(ProgramArguments{ "set", set.first, set.second });
+	}
+});
+
 static HookFunction hookFunction([] ()
 {
+	// continue on
 	_wunlink(MakeRelativeCitPath(L"cache\\error_out").c_str());
 
 	InitializeCriticalSectionAndSpinCount(&g_allocCS, 1000);
@@ -1124,6 +1195,7 @@ static HookFunction hookFunction([] ()
 	g_mainThreadId = GetCurrentThreadId();
 
 	// fwApp 2:1 state handler (loaded game), before running init state machine
+	if (!CfxIsSinglePlayer())
 	{
 		auto loc = hook::get_pattern<char>("32 DB EB 02 B3 01 E8 ? ? ? ? 48 8B", 6);
 
@@ -1158,23 +1230,29 @@ static HookFunction hookFunction([] ()
 		p = hook::pattern("BA 08 00 00 00 8D 41 FC 83 F8 01").count(1).get(0).get<char>(14);
 	}
 
-	// nop the right pointer
-	hook::nop(p, 6);
-
-	// and call our little internal loop function from there
-	hook::call(p, WaitForInitLoop);
-
-	// also add a silly loop to state 6 ('wait for landing page'?)
-	p = hook::pattern("C7 05 ? ? ? ? 06 00 00 00 EB 3F").count(1).get(0).get<char>(0);
-
-	hook::nop(p, 10);
-	hook::call(p, WaitForInitLoopWrap);
-
-	// grr, reloading stage
+	if (!CfxIsSinglePlayer())
 	{
-		auto loc = hook::get_pattern("75 0F E8 ? ? ? ? 8B 0D ? ? ? ? 3B C8", -12);
-		hook::set_call(&g_shutdownSession, loc);
-		hook::call(loc, ShutdownSessionWrap);
+		// nop the right pointer
+		hook::nop(p, 6);
+
+		// and call our little internal loop function from there
+		hook::call(p, WaitForInitLoop);
+
+		// also add a silly loop to state 6 ('wait for landing page'?)
+		p = hook::pattern("C7 05 ? ? ? ? 06 00 00 00 EB 3F").count(1).get(0).get<char>(0);
+
+		hook::nop(p, 10);
+		hook::call(p, WaitForInitLoopWrap);
+
+		// force the above hook to go to stage 6, not stage 7
+		hook::nop(p - 10, 2);
+
+		// grr, reloading stage
+		{
+			auto loc = hook::get_pattern("75 0F E8 ? ? ? ? 8B 0D ? ? ? ? 3B C8", -12);
+			hook::set_call(&g_shutdownSession, loc);
+			hook::call(loc, ShutdownSessionWrap);
+		}
 	}
 
 	// for now, always reload the level in 'reload game' state, even if the current level did not change
@@ -1231,23 +1309,26 @@ static HookFunction hookFunction([] ()
 	//hook::nop(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(0x14), 5);
 	//hook::nop(hook::pattern("B9 CD 36 41 A8 E8").count(1).get(0).get<void>(5), 5);
 
-	// init function bit #1
-	static InitFunctionStub initFunctionStub;
-	initFunctionStub.Assemble();
+	if (!CfxIsSinglePlayer())
+	{
+		// init function bit #1
+		static InitFunctionStub initFunctionStub;
+		initFunctionStub.Assemble();
 
-	p = hook::pattern("41 8B CE FF 54 D0 08").count(1).get(0).get<char>(0);
+		p = hook::pattern("41 8B CE FF 54 D0 08").count(1).get(0).get<char>(0);
 
-	hook::nop(p, 7);
-	hook::call_rcx(p, initFunctionStub.GetCode());
+		hook::nop(p, 7);
+		hook::call_rcx(p, initFunctionStub.GetCode());
 
-	// init function bit #2
-	static InitFunctionStub2 initFunctionStub2;
-	initFunctionStub2.Assemble();
+		// init function bit #2
+		static InitFunctionStub2 initFunctionStub2;
+		initFunctionStub2.Assemble();
 
-	p = hook::pattern("41 8B CE FF 14 D0").count(1).get(0).get<char>(0);
+		p = hook::pattern("41 8B CE FF 14 D0").count(1).get(0).get<char>(0);
 
-	hook::nop(p, 6);
-	hook::call_rcx(p, initFunctionStub2.GetCode());
+		hook::nop(p, 6);
+		hook::call_rcx(p, initFunctionStub2.GetCode());
+	}
 
 	char* location = hook::pattern("40 32 FF 45 84 C9 40 88 3D").count(1).get(0).get<char>(0x20);
 	g_cacheArray = (atArray<allocWrap<uint32_t>>*)(location + *(int32_t*)location + 4);
@@ -1290,10 +1371,10 @@ static HookFunction hookFunction([] ()
 
 	// attempted 'fix' for item #2 (also: logging when the destructor gets called)
 	// 505 changed the jump address; so it's a pattern now
-	location = hook::pattern("1C F6 83 A2 00 00 00 40 74 ? 48 8D 0D").count(1).get(0).get<char>(13);
+	/*location = hook::pattern("1C F6 83 A2 00 00 00 40 74 ? 48 8D 0D").count(1).get(0).get<char>(13);
 
 	g_vehicleReflEntityArray = (decltype(g_vehicleReflEntityArray))(location + *(int32_t*)location + 4 + 800);
-	g_unsafePointerLoc = (void**)((location + *(int32_t*)location + 4) + 800);
+	g_unsafePointerLoc = (void**)((location + *(int32_t*)location + 4) + 800);*/
 
 	// dlc get
 	void* extraDataGetty = hook::pattern("45 33 F6 48 8B D8 48 85 C0 74 48").count(1).get(0).get<void>(0);
@@ -1307,14 +1388,17 @@ static HookFunction hookFunction([] ()
 
 	hook::put<float>(location + *(int32_t*)location + 4, 1000.0f / 120.0f);
 
-	// bypass the state 20 calibration screen loop (which might be wrong; it doesn't seem to exist in my IDA dumps of 323/331 Steam)
-	auto matches = hook::pattern("E8 ? ? ? ? 8A D8 84 C0 74 0E C6 05");
-
-	assert(matches.size() <= 1);
-
-	for (int i = 0; i < matches.size(); i++)
+	if (!CfxIsSinglePlayer())
 	{
-		hook::call(matches.get(i).get<void>(), ReturnInt<1>);
+		// bypass the state 20 calibration screen loop (which might be wrong; it doesn't seem to exist in my IDA dumps of 323/331 Steam)
+		auto matches = hook::pattern("E8 ? ? ? ? 8A D8 84 C0 74 0E C6 05");
+
+		assert(matches.size() <= 1);
+
+		for (int i = 0; i < matches.size(); i++)
+		{
+			hook::call(matches.get(i).get<void>(), ReturnInt<1>);
+		}
 	}
 
 	// kill GROUP_EARLY_ON DLC - this seems to make it unmount in a really weird way, and this was (as of 350) only ever used to mount platform:/patch_1/, a change
@@ -1355,7 +1439,10 @@ static HookFunction hookFunction([] ()
 	hook::set_call(&g_runInitFunctions, loadStarter);
 	hook::set_call(&g_lookAlive, loadStarter + 5);
 
-	hook::call(loadStarter, RunInitFunctionsWrap);
+	if (!CfxIsSinglePlayer())
+	{
+		hook::call(loadStarter, RunInitFunctionsWrap);
+	}
 
 	// RELOADING ATTEMPT NOP
 #if 0
@@ -1446,8 +1533,11 @@ static HookFunction hookFunction([] ()
 		}
 	}*/
 
-	// don't load commandline.txt
-	hook::return_function(hook::get_pattern("45 33 E4 83 39 02 4C 8B FA 45 8D 6C", -0x1C));
+	if (!CfxIsSinglePlayer())
+	{
+		// don't load commandline.txt
+		hook::return_function(hook::get_pattern("45 33 E4 83 39 02 4C 8B FA 45 8D 6C", -0x1C));
+	}
 
 	// sometimes this crashes
 	SafeRun([]()
@@ -1455,5 +1545,8 @@ static HookFunction hookFunction([] ()
 		// ignore collision-related archetype flag in /CREATE_OBJECT(_NO_OFFSET)?/
 		hook::nop(hook::get_pattern("48 50 C1 E9 04 F6 C1 01 0F 84 ? ? 00 00 45", 8), 6);
 	});
+
+	// disable eventschedule.json refetching on failure
+	hook::nop(hook::get_pattern("80 7F 2C 00 75 09 48 8D 4F F8 E8", 10), 5);
 });
 // C7 05 ? ? ? ? 07 00  00 00 E9

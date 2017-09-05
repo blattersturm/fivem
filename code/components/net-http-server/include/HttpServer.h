@@ -9,6 +9,8 @@
 
 #include "TcpServer.h"
 
+#include <forward_list>
+
 namespace net
 {
 struct HeaderComparator : std::binary_function<std::string, std::string, bool>
@@ -31,12 +33,14 @@ private:
 
 	std::string m_path;
 
+	std::string m_remoteAddress;
+
 	HeaderMap m_headerList;
 
 	std::function<void(const std::vector<uint8_t>&)> m_dataHandler;
 
 public:
-	HttpRequest(int httpVersionMajor, int httpVersionMinor, const std::string& requestMethod, const std::string& path, const HeaderMap& headerList);
+	HttpRequest(int httpVersionMajor, int httpVersionMinor, const std::string& requestMethod, const std::string& path, const HeaderMap& headerList, const std::string& remoteAddress);
 
 	virtual ~HttpRequest() override;
 
@@ -76,6 +80,20 @@ public:
 
 		return (it != m_headerList.end()) ? it->second : default_;
 	}
+
+	inline const std::string& GetRemoteAddress() const
+	{
+		return m_remoteAddress;
+	}
+};
+
+struct HttpState
+{
+	// should this request parser be blocked?
+	bool blocked;
+
+	// a function to call when we want to unblock the request
+	std::function<void()> ping;
 };
 
 class
@@ -84,10 +102,8 @@ class
 #endif
 	HttpResponse : public fwRefCountable
 {
-private:
+protected:
 	fwRefContainer<HttpRequest> m_request;
-
-	fwRefContainer<TcpServerStream> m_clientStream;
 
 	int m_statusCode;
 
@@ -99,11 +115,11 @@ private:
 
 	HeaderMap m_headerList;
 
-private:
+protected:
 	static std::string GetStatusMessage(int statusCode);
 
 public:
-	HttpResponse(fwRefContainer<TcpServerStream> clientStream, fwRefContainer<HttpRequest> request);
+	HttpResponse(fwRefContainer<HttpRequest> request);
 
 	std::string GetHeader(const std::string& name);
 
@@ -117,11 +133,13 @@ public:
 
 	void WriteHead(int statusCode, const std::string& statusMessage);
 
-	void WriteHead(int statusCode, const std::string& statusMessage, const HeaderMap& headers);
+	virtual void WriteHead(int statusCode, const std::string& statusMessage, const HeaderMap& headers) = 0;
 
 	void Write(const std::string& data);
 
-	void End();
+	virtual void End() = 0;
+
+	virtual void WriteOut(const std::vector<uint8_t>& data) = 0;
 
 	void End(const std::string& data);
 
@@ -152,11 +170,27 @@ public:
 	virtual bool HandleRequest(fwRefContainer<HttpRequest> request, fwRefContainer<HttpResponse> response) = 0;
 };
 
-class HttpServer : public fwRefCountable
+class HttpServerBase : public fwRefCountable
 {
 public:
 	virtual void AttachToServer(fwRefContainer<TcpServer> server) = 0;
 
 	virtual void RegisterHandler(fwRefContainer<HttpHandler> handler) = 0;
+};
+
+class HttpServer : public HttpServerBase
+{
+public:
+	virtual void AttachToServer(fwRefContainer<TcpServer> server) override;
+
+	virtual void RegisterHandler(fwRefContainer<HttpHandler> handler) override;
+
+protected:
+	virtual void OnConnection(fwRefContainer<TcpServerStream> stream) = 0;
+
+protected:
+	fwRefContainer<TcpServer> m_server;
+
+	std::forward_list<fwRefContainer<HttpHandler>> m_handlers;
 };
 };

@@ -1,19 +1,11 @@
-﻿#include "StdInc.h"
+#include "StdInc.h"
 #include <Client.h>
-
-using namespace std::literals::chrono_literals;
-
-constexpr const auto CLIENT_DEAD_TIMEOUT = 15s;
-
-inline static std::chrono::milliseconds msec()
-{
-	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch());
-}
+#include <GameServer.h>
 
 namespace fx
 {
 	Client::Client(const std::string& guid)
-		: m_guid(guid), m_netId(-1), m_netBase(-1), m_lastSeen(0)
+		: m_guid(guid), m_netId(0xFFFF), m_netBase(-1), m_lastSeen(0), m_hasRouted(false)
 	{
 
 	}
@@ -21,6 +13,7 @@ namespace fx
 	void Client::SetPeer(ENetPeer* peer)
 	{
 		m_peer.reset(peer);
+		m_peerAddress = GetPeerAddress(peer->address);
 
 		OnAssignPeer();
 	}
@@ -30,14 +23,18 @@ namespace fx
 		m_netBase = netBase;
 	}
 
-	void Client::SetNetId(uint16_t netId)
+	void Client::SetNetId(uint32_t netId)
 	{
-		if (m_netId == 0xFFFF)
-		{
-			m_netId = netId;
+		m_netId = netId;
 
-			OnAssignNetId();
-		}
+		OnAssignNetId();
+	}
+
+	void Client::SetTcpEndPoint(const std::string& value)
+	{
+		m_tcpEndPoint = value;
+
+		OnAssignTcpEndPoint();
 	}
 
 	void Client::Touch()
@@ -47,7 +44,36 @@ namespace fx
 
 	bool Client::IsDead()
 	{
+		// if we've not connected yet, we can't be dead
+		if (m_netId >= 0xFFFF)
+		{
+			auto canBeDead = GetData("canBeDead");
+
+			if (!canBeDead.has_value() || !std::any_cast<bool>(canBeDead))
+			{
+				return false;
+			}
+		}
+
 		return (msec() - m_lastSeen) > CLIENT_DEAD_TIMEOUT;
+	}
+
+	void Client::SetData(const std::string& key, const std::any& data)
+	{
+		m_userData[key] = data;
+	}
+
+	const std::any& Client::GetData(const std::string& key)
+	{
+		auto it = m_userData.find(key);
+
+		if (it == m_userData.end())
+		{
+			static const std::any emptyAny;
+			return emptyAny;
+		}
+
+		return it->second;
 	}
 
 	void Client::SendPacket(int channel, const net::Buffer& buffer, ENetPacketFlag flags /* = (ENetPacketFlag)0 */)

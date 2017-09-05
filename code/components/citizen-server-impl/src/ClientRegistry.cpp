@@ -1,4 +1,4 @@
-﻿#include <StdInc.h>
+#include <StdInc.h>
 #include <ClientRegistry.h>
 
 #include <ServerInstanceBase.h>
@@ -31,6 +31,13 @@ namespace fx
 			m_clientsByPeer[weakClient.lock()->GetPeer()] = weakClient;
 		});
 
+		client->OnAssignTcpEndPoint.Connect([=]()
+		{
+			m_clientsByTcpEndPoint[weakClient.lock()->GetTcpEndPoint()] = weakClient;
+		});
+
+		OnClientCreated(client.get());
+
 		return client;
 	}
 
@@ -48,7 +55,7 @@ namespace fx
 		events->TriggerClientEvent("onPlayerJoining", std::optional<std::string_view>(), client->GetNetId(), client->GetName());
 
 		// send the JOINING CLIENT information about EVERY OTHER CLIENT
-		std::string target = fmt::sprintf("net:%d", client->GetNetId());
+		std::string target = fmt::sprintf("%d", client->GetNetId());
 
 		ForAllClients([&](const std::shared_ptr<fx::Client>& otherClient)
 		{
@@ -68,7 +75,14 @@ namespace fx
 
 	void ClientRegistry::SetHost(const std::shared_ptr<Client>& client)
 	{
-		m_hostNetId = client->GetNetId();
+		if (!client)
+		{
+			m_hostNetId = -1;
+		}
+		else
+		{
+			m_hostNetId = client->GetNetId();
+		}
 	}
 
 	void ClientRegistry::AttachToObject(ServerInstanceBase* instance)

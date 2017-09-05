@@ -2,8 +2,10 @@
 
 #include <ResourceManager.h>
 #include <ResourceEventComponent.h>
+#include <ResourceMetaDataComponent.h>
 
 #include <ServerInstanceBase.h>
+#include <ServerInstanceBaseRef.h>
 
 #include <GameServer.h>
 #include <ServerEventComponent.h>
@@ -13,6 +15,8 @@
 #include <VFSManager.h>
 
 #include <network/uri.hpp>
+
+#include <PrintListener.h>
 
 class LocalResourceMounter : public fx::ResourceMounter
 {
@@ -85,29 +89,6 @@ static void HandleServerEvent(fx::ServerInstanceBase* instance, const std::share
 	);
 }
 
-namespace fx
-{
-	class ServerInstanceBaseRef : public fwRefCountable
-	{
-	public:
-		ServerInstanceBaseRef(ServerInstanceBase* instance)
-			: m_ref(instance)
-		{
-			
-		}
-
-		inline ServerInstanceBase* Get()
-		{
-			return m_ref;
-		}
-
-	private:
-		ServerInstanceBase* m_ref;
-	};
-}
-
-DECLARE_INSTANCE_TYPE(fx::ServerInstanceBaseRef);
-
 static void ScanResources(fx::ServerInstanceBase* instance)
 {
 	auto resMan = instance->GetComponent<fx::ResourceManager>();
@@ -151,12 +132,23 @@ static void ScanResources(fx::ServerInstanceBase* instance)
 					// it's a resource
 					else
 					{
-						tasks.push_back(resMan->AddResource(network::uri_builder{}
-							.scheme("file")
-							.host("")
-							.path(resPath)
-							.fragment(findData.name)
-							.uri().string()));
+						auto oldRes = resMan->GetResource(findData.name);
+
+						if (oldRes.GetRef())
+						{
+							oldRes->GetComponent<fx::ResourceMetaDataComponent>()->LoadMetaData(resPath);
+						}
+						else
+						{
+							trace("Found new resource %s in %s\n", findData.name, resPath);
+
+							tasks.push_back(resMan->AddResource(network::uri_builder{}
+								.scheme("file")
+								.host("")
+								.path(resPath)
+								.fragment(findData.name)
+								.uri().string()));
+						}
 					}
 				}
 			} while (vfsDevice->FindNext(handle, &findData));
@@ -177,53 +169,214 @@ static InitFunction initFunction([]()
 
 		fwRefContainer<fx::ResourceManager> resman = instance->GetComponent<fx::ResourceManager>();
 		resman->SetComponent(new fx::ServerInstanceBaseRef(instance));
+		resman->SetComponent(instance->GetComponent<console::Context>());
 
 		resman->AddMounter(new LocalResourceMounter(resman.GetRef()));
 
-		instance->OnReadConfiguration.Connect([=](const boost::property_tree::ptree& pt)
+		fx::Resource::OnInitializeInstance.Connect([](fx::Resource* resource)
 		{
-			vfs::Mount(new vfs::RelativeDevice(pt.get<std::string>("server.citizen_dir")), "citizen:/");
-			vfs::Mount(new vfs::RelativeDevice(instance->GetRootPath() + "/cache/"), "cache:/");
-
-			ScanResources(instance);
-
-			// start all auto-start resources
-			for (auto& child : pt.get_child("server"))
+			fx::ServerInstanceBase* instance = resource->GetManager()->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+			
+			resource->OnStart.Connect([=]()
 			{
-				if (child.first != "resource")
+				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
+
+				net::Buffer outBuffer;
+				outBuffer.Write(HashRageString("msgResStart"));
+				outBuffer.Write(resource->GetName().c_str(), resource->GetName().length());
+
+				clientRegistry->ForAllClients([&](const std::shared_ptr<fx::Client>& client)
 				{
-					continue;
-				}
+					client->SendPacket(0, outBuffer, ENET_PACKET_FLAG_RELIABLE);
+				});
 
-				auto resourceName = child.second.get_optional<std::string>("<xmlattr>.name").get_value_or(
-					child.second.get_value_optional<std::string>().get_value_or(
-						""
-					)
-				);
+				trace("Started resource %s\n", resource->GetName());
+			}, 1000);
 
-				if (resourceName.empty())
+			resource->OnStop.Connect([=]()
+			{
+				trace("Stopping resource %s\n", resource->GetName());
+
+				auto clientRegistry = instance->GetComponent<fx::ClientRegistry>();
+
+				net::Buffer outBuffer;
+				outBuffer.Write(HashRageString("msgResStop"));
+				outBuffer.Write(resource->GetName().c_str(), resource->GetName().length());
+
+				clientRegistry->ForAllClients([&](const std::shared_ptr<fx::Client>& client)
 				{
-					continue;
-				}
+					client->SendPacket(0, outBuffer, ENET_PACKET_FLAG_RELIABLE);
+				});
+			}, -1000);
+		});
 
-				auto resource = resman->GetResource(resourceName);
+		{
+			static auto citizenDir = instance->AddVariable<std::string>("citizen_dir", ConVar_None, "");
 
-				if (!resource.GetRef())
-				{
-					trace("^3Couldn't find auto-started resource %s.^7\n", resourceName);
-					continue;
-				}
+			// create cache directory if needed
+			auto device = vfs::GetDevice(instance->GetRootPath());
+			auto cacheDir = instance->GetRootPath() + "/cache/";
 
-				if (!resource->Start())
+			if (device.GetRef())
+			{
+				device->CreateDirectory(cacheDir);
+			}
+
+			vfs::Mount(new vfs::RelativeDevice(citizenDir->GetValue() + "/"), "citizen:/");
+			vfs::Mount(new vfs::RelativeDevice(cacheDir), "cache:/");
+		}
+
+		ScanResources(instance);
+
+		static auto commandRef = instance->AddCommand("start", [=](const std::string& resourceName)
+		{
+			if (resourceName.empty())
+			{
+				return;
+			}
+
+			auto resource = resman->GetResource(resourceName);
+
+			if (!resource.GetRef())
+			{
+				trace("^3Couldn't find resource %s.^7\n", resourceName);
+				return;
+			}
+
+			if (!resource->Start())
+			{
+				if (resource->GetState() == fx::ResourceState::Stopped)
 				{
 					trace("^3Couldn't start resource %s.^7\n", resourceName);
-					continue;
+					return;
 				}
 			}
 		});
 
+		static auto stopCommandRef = instance->AddCommand("stop", [=](const std::string& resourceName)
+		{
+			if (resourceName.empty())
+			{
+				return;
+			}
+
+			auto resource = resman->GetResource(resourceName);
+
+			if (!resource.GetRef())
+			{
+				trace("^3Couldn't find resource %s.^7\n", resourceName);
+				return;
+			}
+
+			if (!resource->Stop())
+			{
+				if (resource->GetState() != fx::ResourceState::Stopped)
+				{
+					trace("^3Couldn't stop resource %s.^7\n", resourceName);
+					return;
+				}
+			}
+		});
+
+		static auto restartCommandRef = instance->AddCommand("restart", [=](const std::string& resourceName)
+		{
+			auto resource = resman->GetResource(resourceName);
+
+			if (!resource.GetRef())
+			{
+				trace("^3Couldn't find resource %s.^7\n", resourceName);
+				return;
+			}
+
+			if (resource->GetState() != fx::ResourceState::Started)
+			{
+				trace("Can't restart a stopped resource.\n");
+				return;
+			}
+
+			auto conCtx = instance->GetComponent<console::Context>();
+			conCtx->ExecuteSingleCommandDirect(ProgramArguments{ "stop", resourceName });
+			conCtx->ExecuteSingleCommandDirect(ProgramArguments{ "start", resourceName });
+		});
+
+		static auto refreshCommandRef = instance->AddCommand("refresh", [=]()
+		{
+			ScanResources(instance);
+		});
+
+		instance->GetComponent<console::Context>()->GetCommandManager()->FallbackEvent.Connect([=](const std::string& commandName, const ProgramArguments& arguments, const std::any& context)
+		{
+			auto eventComponent = resman->GetComponent<fx::ResourceEventManagerComponent>();
+
+			// assert privilege
+			if (!seCheckPrivilege(fmt::sprintf("command.%s", commandName)))
+			{
+				return true;
+			}
+
+			// if canceled, the command was handled, so cancel the fwEvent
+			return (eventComponent->TriggerEvent2("rconCommand", {}, commandName, arguments.GetArguments()));
+		}, -100);
+
+		static thread_local std::string rawCommand;
+
+		instance->GetComponent<console::Context>()->GetCommandManager()->FallbackEvent.Connect([=](const std::string& commandName, const ProgramArguments& arguments, const std::any& context)
+		{
+			if (context.has_value())
+			{
+				auto eventComponent = resman->GetComponent<fx::ResourceEventManagerComponent>();
+
+				try
+				{
+					return eventComponent->TriggerEvent2("__cfx_internal:commandFallback", { "net:" + std::any_cast<std::string>(context) }, rawCommand);
+				}
+				catch (std::bad_any_cast& e)
+				{
+					trace("caught bad_any_cast in FallbackEvent handler for %s\n", commandName);
+				}
+			}
+
+			return true;
+		}, 99999);
+
 		auto gameServer = instance->GetComponent<fx::GameServer>();
 		gameServer->GetComponent<fx::HandlerMapComponent>()->Add(HashRageString("msgServerEvent"), std::bind(&HandleServerEvent, instance, std::placeholders::_1, std::placeholders::_2));
+
+		gameServer->GetComponent<fx::HandlerMapComponent>()->Add(HashRageString("msgServerCommand"), [=](const std::shared_ptr<fx::Client>& client, net::Buffer& buffer)
+		{
+			auto cmdLen = buffer.Read<uint16_t>();
+
+			std::vector<char> cmd(cmdLen);
+			buffer.Read(cmd.data(), cmdLen);
+
+			std::string printString;
+
+			fx::PrintListenerContext context([&](const std::string_view& print)
+			{
+				printString += print;
+			});
+
+			fx::ScopeDestructor destructor([&]()
+			{
+				msgpack::sbuffer sb;
+
+				msgpack::packer<msgpack::sbuffer> packer(sb);
+				packer.pack_array(1).pack(printString);
+
+				instance->GetComponent<fx::ServerEventComponent>()->TriggerClientEvent("__cfx_internal:serverPrint", sb.data(), sb.size(), { std::to_string(client->GetNetId()) });
+			});
+
+			// save the raw command for fallback usage
+			rawCommand = std::string(cmd.begin(), cmd.end());
+
+			// invoke
+			auto consoleCxt = instance->GetComponent<console::Context>();
+			consoleCxt->GetCommandManager()->Invoke(rawCommand, std::any{ std::to_string(client->GetNetId()) });
+
+			// unset raw command
+			rawCommand = "";
+		});
+
 		gameServer->OnTick.Connect([=]()
 		{
 			resman->Tick();
@@ -258,7 +411,7 @@ void fx::ServerEventComponent::TriggerClientEvent(const std::string_view& eventN
 	// do we have a specific client to send to?
 	if (targetSrc)
 	{
-		int targetNetId = atoi(targetSrc->substr(4).data());
+		int targetNetId = atoi(targetSrc->data());
 		auto client = clientRegistry->GetClientByNetID(targetNetId);
 
 		if (client)
@@ -280,12 +433,16 @@ static InitFunction initFunction2([]()
 {
 	fx::ScriptEngine::RegisterNativeHandler("TRIGGER_CLIENT_EVENT_INTERNAL", [](fx::ScriptContext& context)
 	{
-		std::string_view eventName = context.GetArgument<const char*>(0);
+		std::string_view eventName = context.CheckArgument<const char*>(0);
 		std::optional<std::string_view> targetSrc;
 
-		if (context.GetArgument<int>(1) != -1)
 		{
-			targetSrc = context.GetArgument<const char*>(1);
+			auto targetSrcIdx = context.CheckArgument<const char*>(1);
+
+			if (strcmp(targetSrcIdx, "-1") != 0)
+			{
+				targetSrc = targetSrcIdx;
+			}
 		}
 
 		const void* data = context.GetArgument<const void*>(2);
@@ -303,7 +460,7 @@ static InitFunction initFunction2([]()
 	fx::ScriptEngine::RegisterNativeHandler("START_RESOURCE", [](fx::ScriptContext& context)
 	{
 		auto resourceManager = fx::ResourceManager::GetCurrent();
-		fwRefContainer<fx::Resource> resource = resourceManager->GetResource(context.GetArgument<const char*>(0));
+		fwRefContainer<fx::Resource> resource = resourceManager->GetResource(context.CheckArgument<const char*>(0));
 
 		bool success = false;
 
@@ -318,7 +475,7 @@ static InitFunction initFunction2([]()
 	fx::ScriptEngine::RegisterNativeHandler("STOP_RESOURCE", [](fx::ScriptContext& context)
 	{
 		auto resourceManager = fx::ResourceManager::GetCurrent();
-		fwRefContainer<fx::Resource> resource = resourceManager->GetResource(context.GetArgument<const char*>(0));
+		fwRefContainer<fx::Resource> resource = resourceManager->GetResource(context.CheckArgument<const char*>(0));
 
 		bool success = false;
 
@@ -328,5 +485,135 @@ static InitFunction initFunction2([]()
 		}
 
 		context.SetResult(success);
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_GAME_TYPE", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+		// set gametype variable
+		consoleContext->ExecuteSingleCommandDirect(ProgramArguments{ "set", "gametype", context.CheckArgument<const char*>(0) });
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_MAP_NAME", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+		// set mapname variable
+		consoleContext->ExecuteSingleCommandDirect(ProgramArguments{ "set", "mapname", context.CheckArgument<const char*>(0) });
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("ENABLE_ENHANCED_HOST_SUPPORT", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+		// set mapname variable
+		consoleContext->ExecuteSingleCommandDirect(ProgramArguments{ "set", "sv_enhancedHostSupport", context.GetArgument<bool>(0) ? "1" : "0" });
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_CONVAR", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		// get the variable manager
+		auto varMan = consoleContext->GetVariableManager();
+
+		// get the variable
+		auto var = varMan->FindEntryRaw(context.CheckArgument<const char*>(0));
+
+		if (!var)
+		{
+			context.SetResult(context.CheckArgument<const char*>(1));
+		}
+		else
+		{
+			static std::string varVal;
+			varVal = var->GetValue();
+
+			context.SetResult(varVal.c_str());
+		}
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_CONVAR_INT", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		// get the variable manager
+		auto varMan = consoleContext->GetVariableManager();
+
+		// get the variable
+		auto var = varMan->FindEntryRaw(context.CheckArgument<const char*>(0));
+
+		if (!var)
+		{
+			context.SetResult(context.GetArgument<int>(1));
+		}
+		else
+		{
+			context.SetResult(atoi(var->GetValue().c_str()));
+		}
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("SET_CONVAR", [](fx::ScriptContext& context)
+	{
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's console context
+		auto consoleContext = instance->GetComponent<console::Context>();
+
+		se::ScopedPrincipal principalScope(se::Principal{ "system.console" });
+
+		// set variable
+		consoleContext->ExecuteSingleCommandDirect(ProgramArguments{ "set", context.CheckArgument<const char*>(0), context.CheckArgument<const char*>(1) });
+	});
+
+	fx::ScriptEngine::RegisterNativeHandler("IS_ACE_ALLOWED", [](fx::ScriptContext& context)
+	{
+		context.SetResult(seCheckPrivilege(context.CheckArgument<const char*>(0)));
 	});
 });

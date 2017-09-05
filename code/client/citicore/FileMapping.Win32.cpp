@@ -112,6 +112,10 @@ NTSTATUS NTAPI LdrLoadDllStub(const wchar_t* fileName, uint32_t* flags, UNICODE_
 		moduleNameStr.find(L"overlay.x64.dll") != std::string::npos ||
 		// HideMyIP, causes LoopbackTcpServer and libuv to crash
 		moduleNameStr.find(L"hmipcore64.dll") != std::string::npos ||
+		// NVIDIA SHARE/ShadowPlay capture DLL, high correlation with ERR_GFX_D3D_INIT failures
+		moduleNameStr.find(L"nvspcap") != std::string::npos ||
+		// Proxifier, causes LoopbackTcpServer crashes
+		moduleNameStr.find(L"PrxerNsp.dll") != std::string::npos ||
 		// Ad Muncher, causes LoopbackTcpServer to crash
 		moduleNameStr.find(L"am64-34121.dll") != std::string::npos
 	)
@@ -138,7 +142,7 @@ LONG WINAPI RegOpenKeyExWStub(HKEY key, const wchar_t* subKey, DWORD options, RE
 
 		setValue(L"InstallFolder", MakeRelativeCitPath(L"cache\\game\\ros").c_str());
 		setValue(L"InstallLang", L"1033");
-		setValue(L"Version", L"1.1.6.8");
+		setValue(L"Version", L"1.2.1.9");
 
         LONG status = g_origRegOpenKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\CitizenFX\\Social Club", 0, KEY_READ, outKey);
 

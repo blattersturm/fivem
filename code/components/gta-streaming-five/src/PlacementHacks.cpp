@@ -8,6 +8,8 @@
 #include <StdInc.h>
 #include <Hooking.h>
 
+#include <EntitySystem.h>
+
 #include <atArray.h>
 #include <fiDevice.h>
 
@@ -20,71 +22,6 @@
 
 #include <gameSkeleton.h>
 #include "Streaming.h"
-
-template<typename TSubClass>
-class fwFactoryBase
-{
-public:
-	virtual ~fwFactoryBase() = 0;
-
-	virtual TSubClass* Get(uint32_t hash) = 0;
-
-	virtual void m3() = 0;
-	virtual void m4() = 0;
-
-	virtual void* GetOrCreate(uint32_t hash, uint32_t numEntries) = 0;
-
-	virtual void Remove(uint32_t hash) = 0;
-
-	virtual void ForAllOfHash(uint32_t hash, void(*cb)(TSubClass*)) = 0;
-};
-
-class fwArchetypeDef
-{
-public:
-	virtual ~fwArchetypeDef();
-
-	virtual int64_t GetTypeIdentifier();
-
-	float drawDistance;
-	uint32_t flags; // 0x10000 = alphaclip
-	uint32_t unkField; // lower 5 bits == 31 -> use alpha clip, get masked to 31 in InitializeFromArchetypeDef
-	uint32_t pad;
-	void* pad2;
-	float boundingBoxMin[4];
-	float boundingBoxMax[4];
-	float centroid[4];
-	float radius;
-	float unkDistance;
-	uint32_t nameHash;
-	uint32_t txdHash;
-	uint32_t pad3;
-	uint32_t dwdHash;
-	uint32_t pad4;
-	uint32_t unk_3;
-	uint32_t unkHash;
-	uint32_t pad5[7];
-
-public:
-	fwArchetypeDef()
-	{
-		flags = 0x10000; // was 0x2000
-		drawDistance = 299.0f;
-		unkDistance = 375.0f;
-
-		dwdHash = 0;
-		unk_3 = 3;
-		unkHash = 0x12345678;
-
-		unkField = 31;
-
-		pad = 0;
-		pad2 = 0;
-		pad3 = 0;
-		pad4 = 0;
-		memset(pad5, 0, sizeof(pad4));
-	}
-};
 
 fwArchetypeDef::~fwArchetypeDef()
 {
@@ -99,82 +36,6 @@ int64_t fwArchetypeDef::GetTypeIdentifier()
 }
 
 //static_assert(sizeof(fwArchetypeDef) == 144, "fwArchetypeDef isn't of CBaseArchetypeDef's size...");
-
-class fwArchetype
-{
-public:
-	virtual ~fwArchetype() = 0;
-
-	virtual void m_8() = 0;
-
-	virtual void InitializeFromArchetypeDef(uint32_t mapTypesStoreIdx, fwArchetypeDef* archetypeDef, bool) = 0;
-
-public:
-	char pad[36];
-	float radius;
-	float aabbMin[4];
-	float aabbMax[4];
-	uint32_t flags;
-
-	uint8_t pad2[12];
-	uint8_t assetType;
-	uint8_t pad3;
-
-	uint16_t assetIndex;
-};
-
-class fwEntityDef
-{
-public:
-	virtual ~fwEntityDef();
-
-	virtual int64_t GetTypeIdentifier();
-
-public:
-	uint32_t archetypeNameHash;
-	uint32_t flags;
-	uint32_t guidHash;
-
-	uint32_t pad[3];
-
-	float position[4];
-	float rotation[4];
-
-	float float1;
-	float float2;
-
-	int32_t lodParentIdx;
-
-	float unkFloat1;
-	float unkFloat2;
-
-	int32_t unkInt1;
-	int32_t unkInt2;
-
-	int32_t pad2[5];
-	int32_t unkFF;
-	int32_t unkFF_2;
-	int32_t pad3[2];
-
-public:
-	fwEntityDef()
-	{
-		flags = 0x180000; // was 0x180010
-		lodParentIdx = -1;
-		float1 = 1.0f;
-		float2 = 1.0f;
-		unkFloat1 = 4000.f;
-		unkFloat2 = 500.f;
-		unkInt1 = 2;
-		unkInt2 = 9;
-		unkFF = 0xFF;
-		unkFF_2 = 0xFF;
-
-		memset(pad, 0, sizeof(pad));
-		memset(pad2, 0, sizeof(pad2));
-		memset(pad3, 0, sizeof(pad3));
-	}
-};
 
 fwEntityDef::~fwEntityDef()
 {
@@ -196,7 +57,7 @@ static hook::cdecl_stub<fwArchetype*(uint32_t nameHash, uint64_t* archetypeUnk)>
 	return hook::get_call(hook::pattern("89 44 24 40 8B 4F 08 80 E3 01 E8").count(1).get(0).get<void>(10));
 });
 
-static atArray<fwFactoryBase<fwArchetype>*>* g_archetypeFactories;
+atArray<fwFactoryBase<fwArchetype>*>* g_archetypeFactories;
 
 struct DataFileEntry
 {
@@ -447,40 +308,40 @@ void ParseArchetypeFile(char* text, size_t length)
 					if (valid)
 					{
 						fwArchetypeDef* archetypeDef = new fwArchetypeDef();
-						archetypeDef->drawDistance = drawDistance;
+						archetypeDef->lodDist = drawDistance;
 
-						archetypeDef->boundingBoxMin[0] = aabbMin[0];
-						archetypeDef->boundingBoxMin[1] = aabbMin[1];
-						archetypeDef->boundingBoxMin[2] = aabbMin[2];
+						archetypeDef->bbMin[0] = aabbMin[0];
+						archetypeDef->bbMin[1] = aabbMin[1];
+						archetypeDef->bbMin[2] = aabbMin[2];
 
-						archetypeDef->boundingBoxMax[0] = aabbMax[0];
-						archetypeDef->boundingBoxMax[1] = aabbMax[1];
-						archetypeDef->boundingBoxMax[2] = aabbMax[2];
+						archetypeDef->bbMax[0] = aabbMax[0];
+						archetypeDef->bbMax[1] = aabbMax[1];
+						archetypeDef->bbMax[2] = aabbMax[2];
 
-						archetypeDef->centroid[0] = centroid[0];
-						archetypeDef->centroid[1] = centroid[1];
-						archetypeDef->centroid[2] = centroid[2];
+						archetypeDef->bsCentre[0] = centroid[0];
+						archetypeDef->bsCentre[1] = centroid[1];
+						archetypeDef->bsCentre[2] = centroid[2];
 
-						archetypeDef->radius = radius;
+						archetypeDef->bsRadius = radius;
 
-						archetypeDef->nameHash = HashString(modelName.c_str());
-						archetypeDef->txdHash = HashString(txdName.c_str());
+						archetypeDef->name = HashString(modelName.c_str());
+						archetypeDef->textureDictionary = HashString(txdName.c_str());
 
 						if (strcmp(txdName.c_str(), "null") == 0)
 						{
-							archetypeDef->txdHash = archetypeDef->nameHash;
+							archetypeDef->textureDictionary = archetypeDef->name;
 						}
 
 						if (!parentName.empty())
 						{
-							archetypeDef->dwdHash = HashString(parentName.c_str());
+							archetypeDef->drawableDictionary = HashString(parentName.c_str());
 						}
 
 						// assume this is a CBaseModelInfo
 						// TODO: get [mi] from [miPtr]
-						void* miPtr = g_archetypeFactories->Get(1)->GetOrCreate(archetypeDef->nameHash, 1);
+						void* miPtr = g_archetypeFactories->Get(1)->GetOrCreate(archetypeDef->name, 1);
 
-						fwArchetype* mi = g_archetypeFactories->Get(1)->Get(archetypeDef->nameHash);
+						fwArchetype* mi = g_archetypeFactories->Get(1)->Get(archetypeDef->name);
 
 						mi->InitializeFromArchetypeDef(1390, archetypeDef, true);
 
@@ -560,8 +421,8 @@ void ParseArchetypeFile(char* text, size_t length)
 					if (archetype)
 					{
 						fwEntityDef* entityDef = new fwEntityDef();
-						entityDef->archetypeNameHash = archetypeHash;
-						entityDef->guidHash = guidHash;
+						entityDef->archetypeName = archetypeHash;
+						entityDef->guid = guidHash;
 
 						entityDef->position[0] = position[0];
 						entityDef->position[1] = position[1];
@@ -572,8 +433,8 @@ void ParseArchetypeFile(char* text, size_t length)
 						entityDef->rotation[2] = rotation[2];
 						entityDef->rotation[3] = rotation[3];
 
-						getFloat("float1", &entityDef->unkFloat1);
-						getFloat("float2", &entityDef->unkFloat2);
+						getFloat("float1", &entityDef->lodDist);
+						getFloat("float2", &entityDef->childLodDist);
 
 						getUInt("flags", &entityDef->flags);
 

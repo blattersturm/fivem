@@ -84,15 +84,17 @@ inline bool operator<(const guid_t& left, const guid_t& right)
 // definitions for various things used by m.o's IDL compiler
 #ifdef _MSC_VER
 #define NS_NO_VTABLE __declspec(novtable)
+#define NOINLINE __declspec(noinline)	// this is needed as the VS15.3 compiler will act weird otherwise
 #else
 #define NS_NO_VTABLE
+#define NOINLINE
 #endif
 
 #define NS_ERROR_NULL_POINTER			FX_E_INVALIDARG
 #define NS_ERROR_NOT_IMPLEMENTED		FX_E_NOTIMPL
 
 #define NS_DECLARE_STATIC_IID_ACCESSOR(iid_const) \
-	static inline guid_t GetIID() { return iid_const; }
+	static NOINLINE inline guid_t GetIID() { return iid_const; }
 
 #ifdef _WIN32
 #define OM_DECL __stdcall

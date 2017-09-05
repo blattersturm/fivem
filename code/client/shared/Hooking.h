@@ -196,6 +196,11 @@ T iat(const char* moduleName, T function, TOrdinal ordinal)
 			continue;
 		}
 
+		if (descriptor->OriginalFirstThunk == 0)
+		{
+			return nullptr;
+		}
+
 		auto nameTableEntry = getRVA<uintptr_t>(descriptor->OriginalFirstThunk);
 		auto addressTableEntry = getRVA<uintptr_t>(descriptor->FirstThunk);
 
@@ -618,6 +623,15 @@ template<typename T, typename AT>
 inline void call_rcx(AT address, T func)
 {
 	call_reg<1>(address, func);
+}
+
+template<typename T, typename TAddr>
+inline T get_address(TAddr address)
+{
+	intptr_t target = *(int32_t*)(get_adjusted(address));
+	target += (get_adjusted(address) + 4);
+
+	return (T)target;
 }
 
 template<typename T>

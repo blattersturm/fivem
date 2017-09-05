@@ -25,6 +25,9 @@
 
 using fx::CachedResourceMounter;
 
+static std::map<std::string, std::function<void(int, int)>> g_statusCallbacks;
+static std::mutex g_statusCallbacksMutex;
+
 void MountResourceCacheDevice(std::shared_ptr<ResourceCache> cache);
 
 static auto g_limitedScheduler = concurrency::Scheduler::Create(
@@ -115,6 +118,14 @@ fwRefContainer<vfs::Device> CachedResourceMounter::OpenResourcePackfile(const fw
 	return nullptr;
 }
 
+void CachedResourceMounter::AddStatusCallback(const std::string& resourceName, const std::function<void(int, int)>& callback)
+{
+	auto path = FormatPath(resourceName, "resource.rpf");
+
+	std::unique_lock<std::mutex> lock(g_statusCallbacksMutex);
+	g_statusCallbacks[path] = callback;
+}
+
 pplx::task<fwRefContainer<fx::Resource>> CachedResourceMounter::LoadResource(const std::string& uri)
 {
 	fwRefContainer<fx::Resource> resource = InitializeLoad(uri, nullptr);
@@ -138,6 +149,15 @@ pplx::task<fwRefContainer<fx::Resource>> CachedResourceMounter::LoadResource(con
 
 				// copy the pointer in case we need to nullptr it
 				fwRefContainer<fx::Resource> localResource = resource;
+
+				if (!m_manager->GetResource(resource->GetName()).GetRef())
+				{
+					trace("Our resource - %s - disappeared right from under our nose?\n", resource->GetName());
+
+					localResource = nullptr;
+
+					return localResource;
+				}
 
 				// open the packfile
 				fwRefContainer<vfs::Device> packfile = OpenResourcePackfile(resource);
@@ -211,3 +231,25 @@ namespace fx
 
 	fwEvent<const StreamingEntryData&> OnAddStreamingResource;
 }
+
+static InitFunction initFunction([]()
+{
+	fx::OnCacheDownloadStatus.Connect([](const std::string& fileName, size_t done, size_t total)
+	{
+		std::unique_lock<std::mutex> lock(g_statusCallbacksMutex);
+		auto it = g_statusCallbacks.find(fileName);
+
+		if (it != g_statusCallbacks.end())
+		{
+			lock.unlock();
+
+			it->second(done, total);
+
+			if (done >= total)
+			{
+				lock.lock();
+				g_statusCallbacks.erase(fileName);
+			}
+		}
+	});
+});

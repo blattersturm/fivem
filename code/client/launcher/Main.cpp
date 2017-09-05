@@ -1,4 +1,4 @@
-﻿/*
+/*
  * This file is part of the CitizenFX project - http://citizen.re/
  *
  * See LICENSE and MENTIONS in the root of the source tree for information
@@ -111,6 +111,28 @@ void main()
 
 	static HostSharedData<CfxState> initState("CfxInitState");
 
+	// check if the master process still lives
+	{
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, initState->initialPid);
+
+		if (hProcess == nullptr)
+		{
+			initState->initialPid = GetCurrentProcessId();
+		}
+		else
+		{
+			DWORD exitCode = STILL_ACTIVE;
+			GetExitCodeProcess(hProcess, &exitCode);
+
+			if (exitCode != STILL_ACTIVE)
+			{
+				initState->initialPid = GetCurrentProcessId();
+			}
+
+			CloseHandle(hProcess);
+		}
+	}
+
 	// if not the master process, force devmode
 	if (!devMode)
 	{
@@ -163,18 +185,21 @@ void main()
 		// delete crashometry
 		_wunlink(MakeRelativeCitPath(L"cache\\crashometry").c_str());
 
-		// create job
-		HANDLE hJob = CreateJobObject(nullptr, nullptr);
-
-		if (hJob)
+		if (GetFileAttributesW(MakeRelativeCitPath(L"permalauncher").c_str()) == INVALID_FILE_ATTRIBUTES)
 		{
-			if (AssignProcessToJobObject(hJob, GetCurrentProcess()))
+			// create job
+			HANDLE hJob = CreateJobObject(nullptr, nullptr);
+
+			if (hJob)
 			{
-				JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
-				info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-				if (SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info)))
+				if (AssignProcessToJobObject(hJob, GetCurrentProcess()))
 				{
-					initState->inJobObject = true;
+					JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+					info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+					if (SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info)))
+					{
+						initState->inJobObject = true;
+					}
 				}
 			}
 		}
@@ -361,9 +386,9 @@ void main()
 
 				VS_FIXEDFILEINFO* fixedInfo = reinterpret_cast<VS_FIXEDFILEINFO*>(fixedInfoBuffer);
 				
-				if ((fixedInfo->dwFileVersionLS >> 16) != 505)
+				if ((fixedInfo->dwFileVersionLS >> 16) != 1103)
 				{
-					MessageBox(nullptr, va(L"The found GTA executable (%s) has version %d.%d.%d.%d, but only 1.0.505 is currently supported. Please obtain this version, and try again.",
+					MessageBox(nullptr, va(L"The found GTA executable (%s) has version %d.%d.%d.%d, but only 1.0.1103.2 is currently supported. Please obtain this version, and try again.",
 										   gameExecutable.c_str(),
 										   (fixedInfo->dwFileVersionMS >> 16),
 										   (fixedInfo->dwFileVersionMS & 0xFFFF),
@@ -380,7 +405,7 @@ void main()
 	if (!toolMode)
 	{
 		// game launcher initialization
-		CitizenGame::Launch(gameExecutable);
+		CitizenGame::Launch(gameExecutable, true);
 	}
 	else
 	{

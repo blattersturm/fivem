@@ -53,7 +53,8 @@ namespace nui
 	void OVERLAY_DECL DestroyFrame(fwString frameName);
 	void OVERLAY_DECL SignalPoll(fwString frameName);
 
-	void OVERLAY_DECL GiveFocus(bool hasFocus);
+	void OVERLAY_DECL GiveFocus(bool hasFocus, bool hasCursor = false);
+	void OVERLAY_DECL OverrideFocus(bool hasFocus);
 	bool OVERLAY_DECL HasMainUI();
 	void OVERLAY_DECL SetMainUI(bool enable);
 

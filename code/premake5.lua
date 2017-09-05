@@ -63,20 +63,27 @@ workspace "CitizenMP"
 
 	if os.is('windows') then
 		buildoptions '/std:c++latest'
+		buildoptions '/await'
 
 		systemversion '10.0.15063.0'
 	end
 
 	-- special build dirs for FXServer
 	if _OPTIONS['game'] == 'server' then
-		location ("build/server/" .. os.get())
+		location ((_OPTIONS['builddir'] or "build/") .. "server/" .. os.get())
 		architecture 'x64'
 		defines 'IS_FXSERVER'
 	end
 
+	local binroot = ((_OPTIONS['bindir'] or "bin/") .. _OPTIONS['game']) .. '/'
+
+	if _OPTIONS['game'] == 'server' then
+		binroot = (_OPTIONS['bindir'] or "bin/") .. 'server/' .. os.get() .. '/'
+	end
+
 	-- debug output
 	configuration "Debug*"
-		targetdir ((_OPTIONS['bindir'] or "bin/") .. _OPTIONS['game'] .. "/debug")
+		targetdir (binroot .. "/debug")
 		defines "NDEBUG"
 
 		-- this slows down the application a lot
@@ -87,29 +94,24 @@ workspace "CitizenMP"
 			buildoptions '/Ob1'
 		end
 
-		-- special path for server
-		if _OPTIONS['game'] == 'server' then
-			targetdir ("bin/server/" .. os.get() .. "/debug")
-		end
-
 	-- release output
 	configuration "Release*"
-		targetdir ((_OPTIONS['bindir'] or "bin/") .. _OPTIONS['game'] .. "/release")
+		targetdir (binroot .. "/release")
 		defines "NDEBUG"
 		optimize "Speed"
 
-		if _OPTIONS['game'] == 'server' then
-			targetdir ("bin/server/" .. os.get() .. "/release")
-		end
-
 	configuration "game=five"
-		architecture 'x64'
 		defines "GTA_FIVE"
+
+		filter 'language:C or language:C++'
+			architecture 'x64'
 
 	configuration "windows"
 		links { "winmm" }
 
-	configuration "not windows"
+	filter { 'system:not windows', 'language:C or language:C++' }
+		architecture 'x64'
+
 		buildoptions {
 			"-fPIC", -- required to link on AMD64
 		}
@@ -151,24 +153,50 @@ if _OPTIONS['game'] ~= 'server' then
 		pchheader "StdInc.h"
 end
 
-	local buildHost = os.getenv("COMPUTERNAME") or 'dummy'
+function premake.vstudio.cs2005.debugProps(cfg)
+	if cfg.symbols == premake.ON then
+		_p(2,'<DebugSymbols>true</DebugSymbols>')
+	end
+	_p(2,'<DebugType>portable</DebugType>')
+	_p(2,'<Optimize>%s</Optimize>', iif(premake.config.isOptimizedBuild(cfg), "true", "false"))
+end
 
-	--[[if buildHost == 'FALLARBOR' then
-		project "CitiMono"
-			targetname "CitizenFX.Core"
-			language "C#"
-			kind "SharedLib"
+local function WriteDocumentationFileXml(_premake, _prj, value)
+    _premake.w('<DocumentationFile>' .. string.gsub(_prj.buildtarget.relpath, ".dll", ".xml") .. '</DocumentationFile>')
+end
 
-			files { "client/clrcore/**.cs" }
+premake.override(premake.vstudio.cs2005, "compilerProps", function(base, prj)
+    base(prj)
+    WriteDocumentationFileXml(premake, prj, XmlDocFileName)
+end)
 
-			links { "System" }
+	project "CitiMono"
+		targetname "CitizenFX.Core"
+		language "C#"
+		kind "SharedLib"
 
-			configuration "Debug*"
-				targetdir "bin/debug/citizen/clr/lib/mono/4.5"
+		-- Missing XML comment for publicly visible type or member
+		disablewarnings 'CS1591'
 
-			configuration "Release*"
-				targetdir "bin/release/citizen/clr/lib/mono/4.5"
-	end]]
+		flags { 'Unsafe' }
+
+		files { "client/clrcore/*.cs", "client/clrcore/Math/*.cs" }
+
+		if _OPTIONS['game'] ~= 'server' then
+			files { "client/clrcore/External/*.cs" }
+		else
+			files { "client/clrcore/Server/*.cs" }
+		end
+
+		links { "System.dll", "Microsoft.CSharp.dll", "System.Core.dll", "../data/client/citizen/clr2/lib/mono/4.5/MsgPack.dll" }
+
+		buildoptions '/debug:portable'
+
+		configuration "Debug*"
+			targetdir (binroot .. '/debug/citizen/clr2/lib/mono/4.5/')
+
+		configuration "Release*"
+			targetdir (binroot .. '/release/citizen/clr2/lib/mono/4.5/')
 
 	group ""
 

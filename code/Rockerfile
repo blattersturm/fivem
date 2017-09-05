@@ -1,0 +1,6 @@
+FROM alpine:3.6
+MOUNT ..:/src
+RUN /bin/sh /src/code/tools/ci/build_server_2.sh
+WORKDIR /opt/cfx-server
+CMD ["/bin/sh", "/opt/cfx-server/run.sh"]
+PUSH citizenfx/server:dev

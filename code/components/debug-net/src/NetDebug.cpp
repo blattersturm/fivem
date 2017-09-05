@@ -12,7 +12,7 @@
 #include "FontRenderer.h"
 #include "DrawCommands.h"
 #include "Screen.h"
-#include "ConsoleHost.h"
+#include <CoreConsole.h>
 #include <mmsystem.h>
 
 const int g_netOverlayOffsetX = -30;
@@ -31,6 +31,10 @@ public:
 	virtual void OnIncomingPacket(const NetPacketMetrics& packetMetrics) override;
 
 	virtual void OnOutgoingPacket(const NetPacketMetrics& packetMetrics) override;
+
+	virtual void OnIncomingRoutePackets(int num) override;
+
+	virtual void OnOutgoingRoutePackets(int num) override;
 
 	virtual void OnPingResult(int msec) override;
 
@@ -119,14 +123,7 @@ NetOverlayMetricSink::NetOverlayMetricSink()
 	memset(m_inRouteDelaySamples, 0, sizeof(m_inRouteDelaySamples));
 	memset(m_inRouteDelaySamplesArchive, 0, sizeof(m_inRouteDelaySamplesArchive));
 
-	ConHost::OnInvokeNative.Connect([=] (const char* nativeName, const char* argument)
-	{
-		// enable/disable command
-		if (strcmp(nativeName, "netGraphEnabled") == 0)
-		{
-			m_enabled = argument[0] == 'y';
-		}
-	});
+	static ConVar<bool> conVar("netgraph", ConVar_Archive, false, &m_enabled);
 
 	OnPostFrontendRender.Connect([=] ()
 	{
@@ -163,6 +160,16 @@ void NetOverlayMetricSink::OnOutgoingPacket(const NetPacketMetrics& packetMetric
 	m_outRoutePackets += packetMetrics.GetElementCount(NET_PACKET_SUB_ROUTED_MESSAGES);
 }
 
+void NetOverlayMetricSink::OnIncomingRoutePackets(int num)
+{
+	m_inRoutePackets += num;
+}
+
+void NetOverlayMetricSink::OnOutgoingRoutePackets(int num)
+{
+	m_outRoutePackets += num;
+}
+
 void NetOverlayMetricSink::OnPingResult(int msec)
 {
 	m_ping = msec;
@@ -191,6 +198,10 @@ void NetOverlayMetricSink::OnRouteDelayResult(int msec)
 	// calculate max
 	m_inRouteDelayMax = *std::max_element(m_inRouteDelaySamplesArchive, m_inRouteDelaySamplesArchive + _countof(m_inRouteDelaySamplesArchive));
 }
+
+
+// log data if enabled
+static ConVar<std::string> netLogFile("net_statsFile", ConVar_Archive, "");
 
 void NetOverlayMetricSink::UpdateMetrics()
 {
@@ -232,6 +243,42 @@ void NetOverlayMetricSink::UpdateMetrics()
 
 		// update the timer
 		m_lastUpdatePerSec = time;
+
+		// log output?
+		auto netLog = netLogFile.GetValue();
+		if (!netLog.empty())
+		{
+			// check if we want a new file
+			static std::string lastNetLog;
+			static uint32_t netLogInitTime;
+
+			std::wstring netLogPath = MakeRelativeCitPath(ToWide(netLog));
+
+			auto writeToNetLog = [&](const std::string& text)
+			{
+				FILE* f = _wfopen(netLogPath.c_str(), L"a");
+
+				if (f)
+				{
+					fwrite(text.c_str(), text.size(), 1, f);
+					fclose(f);
+				}
+			};
+
+			if (lastNetLog != netLog)
+			{
+				// delete the file and write a header
+				_wunlink(netLogPath.c_str());
+				writeToNetLog("Time,Ping,InBytes,InPackets,OutBytes,OutPackets,InRoutePackets,OutRoutePackets\n");
+
+				netLogInitTime = timeGetTime();
+
+				lastNetLog = netLog;
+			}
+
+			writeToNetLog(fmt::sprintf("%d,%d,%d,%d,%d,%d,%d,%d\n",
+				timeGetTime() - netLogInitTime, m_ping, m_lastInBytes, m_lastInPackets, m_lastOutBytes, m_lastOutPackets, m_lastInRoutePackets, m_lastOutRoutePackets));
+		}
 	}
 }
 
@@ -265,7 +312,7 @@ void NetOverlayMetricSink::DrawGraph()
 		for (int j = 0; j < NET_PACKET_SUB_MAX; j++)
 		{
 			// get Y for this submetric
-			float y1 = y - ((metric.GetElementSize((NetPacketSubComponent)j) / maxHeight) * (g_netOverlayHeight - 100));
+			float y1 = ceilf(y - ((metric.GetElementSize((NetPacketSubComponent)j) / maxHeight) * (g_netOverlayHeight - 100)));
 			float y2 = y;
 
 			// set a rectangle

@@ -1,11 +1,20 @@
 #pragma once
 
+#include <CoreConsole.h>
+
+#include <se/Security.h>
+
 #include <ClientRegistry.h>
 
 #include <MapComponent.h>
 #include <NetAddress.h>
 
 #include <enet/enet.h>
+
+inline std::chrono::milliseconds msec()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch());
+}
 
 namespace fx
 {
@@ -40,6 +49,16 @@ namespace fx
 
 		void Broadcast(const net::Buffer& buffer);
 
+		std::string GetVariable(const std::string& key);
+
+		void DropClient(const std::shared_ptr<Client>& client, const std::string& reason, const fmt::ArgList& args);
+
+		FMT_VARIADIC(void, DropClient, const std::shared_ptr<Client>&, const std::string&);
+
+		void ForceHeartbeat();
+
+		void DeferCall(int inMsec, const std::function<void()>& fn);
+
 		inline void SetRunLoop(const std::function<void()>& runLoop)
 		{
 			m_runLoop = runLoop;
@@ -48,6 +67,11 @@ namespace fx
 		inline ServerInstanceBase* GetInstance()
 		{
 			return m_instance;
+		}
+
+		inline std::string GetRconPassword()
+		{
+			return m_rconPassword->GetValue();
 		}
 
 	private:
@@ -68,7 +92,7 @@ namespace fx
 
 		std::vector<THostPtr> hosts;
 
-		fwEvent<> OnHostsRegistered;
+		fwEvent<ENetHost*> OnHostRegistered;
 
 		fwEvent<> OnTick;
 
@@ -88,6 +112,22 @@ namespace fx
 		ClientRegistry* m_clientRegistry;
 
 		ServerInstanceBase* m_instance;
+
+		std::shared_ptr<ConsoleCommand> m_heartbeatCommand;
+
+		std::shared_ptr<ConVar<std::string>> m_rconPassword;
+
+		std::shared_ptr<ConVar<std::string>> m_hostname;
+
+		std::shared_ptr<ConVar<std::string>> m_masters[3];
+
+		std::map<std::string, net::PeerAddress> m_masterCache;
+
+		fwRefContainer<se::Context> m_seContext;
+
+		int64_t m_nextHeartbeatTime;
+
+		tbb::concurrent_unordered_map<int, std::tuple<int, std::function<void()>>> m_deferCallbacks;
 	};
 
 	using TPacketTypeHandler = std::function<void(const std::shared_ptr<Client>& client, net::Buffer& packet)>;

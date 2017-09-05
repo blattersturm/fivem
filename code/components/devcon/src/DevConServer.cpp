@@ -1,5 +1,6 @@
 #include "StdInc.h"
 
+#if _WIN32
 #include <CoreConsole.h>
 
 #include <CfxState.h>
@@ -236,6 +237,11 @@ static InitFunction initFunction([]()
 	static fwRefContainer<net::TcpServerManager> tcpStack = new net::TcpServerManager();
 	static fwRefContainer<net::TcpServer> tcpServer = tcpStack->CreateServer(net::PeerAddress::FromString("0.0.0.0:29100").get());
 
+	if (!tcpServer.GetRef())
+	{
+		return;
+	}
+
 	tcpServer->SetConnectionCallback([](fwRefContainer<net::TcpServerStream> stream)
 	{
 		auto localStream = stream;
@@ -306,3 +312,4 @@ static InitFunction initFunction([]()
 		});
 	});
 });
+#endif

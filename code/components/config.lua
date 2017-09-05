@@ -18,6 +18,7 @@ if _OPTIONS['game'] == 'server' then
 	if os.is('windows') then
 		component 'citizen-ssh-server'
 	end
+	component 'citizen-scripting-mono'
 	component 'citizen-server-instance'
 	component 'citizen-server-impl'
 	component 'conhost-server'
@@ -25,6 +26,7 @@ if _OPTIONS['game'] == 'server' then
 	component 'vfs-impl-server'
 else
 	component 'tool-formats'
+	component 'tool-vehrec'
 	component 'rage-formats-x'
 	component 'conhost-v2'
 
@@ -69,6 +71,6 @@ component 'scripting-gta'
 component 'gta-game-five'
 component 'handling-loader-five'
 component 'loading-screens-five'
-component 'adhesive'
 component 'devtools-five'
 component 'devcon'
+component 'extra-natives-five'

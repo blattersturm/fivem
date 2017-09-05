@@ -27,6 +27,11 @@ static InitFunction initFunction([] ()
 		ConHost::Print(0, msg);
 	});
 
+	static ConsoleCommand quitCommand("quit", []()
+	{
+		TerminateProcess(GetCurrentProcess(), -1);
+	});
+
 	InputHook::OnWndProc.Connect([] (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, bool& pass, LRESULT& lresult)
 	{
 		if (g_consoleFlag)
@@ -68,21 +73,4 @@ static InitFunction initFunction([] ()
 			}
 		}
 	}, -10);
-
-	static ConsoleCommand consoleCommand("help", []()
-	{
-		auto mgr = Instance<ConsoleCommandManager>::Get();
-
-		std::set<std::string, console::IgnoreCaseLess> commands;
-
-		mgr->ForAllCommands([&](const std::string& cmd)
-		{
-			commands.insert(cmd);
-		});
-
-		for (const auto& cmd : commands)
-		{
-			console::Printf("cmd", "- %s\n", cmd);
-		}
-	});
 });

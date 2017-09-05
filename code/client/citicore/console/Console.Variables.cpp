@@ -165,16 +165,3 @@ bool ConsoleVariableManager::Process(const std::string& commandName, const Progr
 	// we currently don't process any variables specifically
 	return false;
 }
-
-ConsoleVariableManager* ConsoleVariableManager::GetDefaultInstance()
-{
-	return console::GetDefaultContext()->GetVariableManager();
-}
-
-namespace internal
-{
-void MarkConsoleVarModified(ConsoleVariableManager* manager, const std::string& name)
-{
-	manager->AddEntryFlags(name, ConVar_Modified);
-}
-}

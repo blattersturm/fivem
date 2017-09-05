@@ -20,9 +20,16 @@
 
 #include <rapidjson/document.h>
 
+#include <boost/algorithm/string.hpp>
+
 #include <network/uri.hpp>
 
+#include <CoreConsole.h>
+
 #include <Error.h>
+
+#include <pplawait.h>
+#include <experimental/resumable>
 
 static NetAddress g_netAddress;
 
@@ -43,6 +50,55 @@ static std::string CrackResourceName(const std::string& uri)
 	return "MISSING";
 }
 
+static pplx::task<std::vector<std::tuple<fwRefContainer<fx::Resource>, std::string>>> DownloadResources(std::vector<std::string> requiredResources, NetLibrary* netLibrary)
+{
+	struct ProgressData
+	{
+		std::atomic<int> current;
+		int total;
+	};
+
+	fx::ResourceManager* manager = Instance<fx::ResourceManager>::Get();
+
+	std::vector<std::tuple<fwRefContainer<fx::Resource>, std::string>> list;
+
+	auto progressCounter = std::make_shared<ProgressData>();
+	progressCounter->current = 0;
+	progressCounter->total = requiredResources.size();
+
+	for (auto& resourceUri : requiredResources)
+	{
+		auto resourceName = CrackResourceName(resourceUri);
+
+		{
+			fwRefContainer<fx::Resource> oldResource = manager->GetResource(resourceName);
+
+			if (oldResource.GetRef())
+			{
+				manager->RemoveResource(oldResource);
+			}
+		}
+
+		auto mounterRef = manager->GetMounterForUri(resourceUri);
+		static_cast<fx::CachedResourceMounter*>(mounterRef.GetRef())->AddStatusCallback(resourceName, [=](int downloadCurrent, int downloadTotal)
+		{
+			netLibrary->OnConnectionProgress(fmt::sprintf("Downloading %s (%d of %d - %.2f/%.2f MiB)", resourceName, progressCounter->current, progressCounter->total,
+				downloadCurrent / 1024.0f / 1024.0f, downloadTotal / 1024.0f / 1024.0f), progressCounter->current, progressCounter->total);
+		});
+
+		auto resource = co_await manager->AddResource(resourceUri);
+
+		// report progress
+		int currentCount = progressCounter->current.fetch_add(1) + 1;
+		netLibrary->OnConnectionProgress(fmt::sprintf("Downloaded %s (%d of %d)", resourceName, currentCount, progressCounter->total), currentCount, progressCounter->total);
+
+		// return tuple
+		list.emplace_back(resource, resourceName);
+	}
+
+	return list;
+}
+
 static InitFunction initFunction([] ()
 {
 	NetLibrary::OnNetLibraryCreate.Connect([] (NetLibrary* netLibrary)
@@ -50,7 +106,7 @@ static InitFunction initFunction([] ()
 		static std::mutex executeNextGameFrameMutex;
 		static std::vector<std::function<void()>> executeNextGameFrame;
 
-		auto updateResources = [=] (const std::string& updateList)
+		auto updateResources = [=] (const std::string& updateList, const std::function<void()>& doneCb)
 		{
 			// initialize mounter if needed
 			{
@@ -240,44 +296,8 @@ static InitFunction initFunction([] ()
 				}
 
 				using ResultTuple = std::tuple<fwRefContainer<fx::Resource>, std::string>;
-				std::vector<pplx::task<ResultTuple>> tasks;
 
-				// used for reporting progress
-				struct ProgressData
-				{
-					std::atomic<int> current;
-					int total;
-				};
-
-				auto progressCounter = std::make_shared<ProgressData>();
-				progressCounter->current = 0;
-				progressCounter->total = requiredResources.size();
-
-				for (auto& resourceUri : requiredResources)
-				{
-					auto resourceName = CrackResourceName(resourceUri);
-
-					{
-						fwRefContainer<fx::Resource> oldResource = manager->GetResource(resourceName);
-
-						if (oldResource.GetRef())
-						{
-							manager->RemoveResource(oldResource);
-						}
-					}
-
-					tasks.push_back(manager->AddResource(resourceUri).then([=](fwRefContainer<fx::Resource> resource) -> ResultTuple
-					{
-						// report progress
-						int currentCount = progressCounter->current.fetch_add(1) + 1;
-						netLibrary->OnConnectionProgress(fmt::sprintf("Downloaded %s (%d of %d)", resourceName, currentCount, progressCounter->total), currentCount, progressCounter->total);
-
-						// return tuple
-						return { resource, resourceName };
-					}));
-				}
-
-				pplx::when_all(tasks.begin(), tasks.end()).then([=] (std::vector<ResultTuple> resources)
+				DownloadResources(requiredResources, netLibrary).then([=] (std::vector<ResultTuple> resources)
 				{
 					for (auto& resourceData : resources)
 					{
@@ -285,32 +305,64 @@ static InitFunction initFunction([] ()
 
 						if (!resource.GetRef())
 						{
-							GlobalError("Couldn't load resource %s. :(", std::get<std::string>(resourceData));
+							if (updateList.empty())
+							{
+								GlobalError("Couldn't load resource %s. :(", std::get<std::string>(resourceData));
+							}
 
 							return;
 						}
+					}
 
-						std::string resourceName = resource->GetName();
+					for (auto& resourceData : resources)
+					{
+						auto resource = std::get<fwRefContainer<fx::Resource>>(resourceData);
 
-						std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
-						executeNextGameFrame.push_back([=] ()
+						if (resource.GetRef())
 						{
-							if (!resource->Start())
+							std::string resourceName = resource->GetName();
+
+							std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+							executeNextGameFrame.push_back([=]()
 							{
-								GlobalError("Couldn't start resource %s. :(", resourceName.c_str());
-							}
-						});
+								if (!resource->Start())
+								{
+									GlobalError("Couldn't start resource %s. :(", resourceName.c_str());
+								}
+							});
+						}
 					}
 
 					// mark DownloadsComplete on the next frame so all resources will have started
-					executeNextGameFrame.push_back([=] ()
 					{
-						netLibrary->DownloadsComplete();
-					});
+						std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+						executeNextGameFrame.push_back([=]()
+						{
+							netLibrary->DownloadsComplete();
+						});
+					}
+
+					doneCb();
 				});
 			});
 		};
 
+		static std::queue<std::string> g_resourceUpdateQueue;
+
+		std::shared_ptr<std::unique_ptr<std::function<void()>>> updateResource = std::make_shared<std::unique_ptr<std::function<void()>>>();
+		*updateResource = std::make_unique<std::function<void()>>([=]()
+		{
+			if (!g_resourceUpdateQueue.empty())
+			{
+				auto resource = g_resourceUpdateQueue.front();
+				g_resourceUpdateQueue.pop();
+
+				updateResources(resource, [=]()
+				{
+					executeNextGameFrame.push_back(**updateResource);
+				});
+			}
+		});
 
 		// download trigger
 		netLibrary->OnInitReceived.Connect([=] (NetAddress address)
@@ -320,7 +372,9 @@ static InitFunction initFunction([] ()
 			fx::ResourceManager* resourceManager = Instance<fx::ResourceManager>::Get();
 			resourceManager->ResetResources();
 
-			updateResources("");
+			updateResources("", []()
+			{
+			});
 		});
 
 		OnGameFrame.Connect([] ()
@@ -411,8 +465,12 @@ static InitFunction initFunction([] ()
 #endif
 			}
 
-			updateResources(resourceName);
-			//TheDownloads.QueueResourceUpdate(resourceName);
+			g_resourceUpdateQueue.push(resourceName);
+
+			{
+				std::unique_lock<std::mutex> lock(executeNextGameFrameMutex);
+				executeNextGameFrame.push_back(**updateResource);
+			}
 		});
 
 		fx::ScriptEngine::RegisterNativeHandler("TRIGGER_SERVER_EVENT_INTERNAL", [=] (fx::ScriptContext& context)
@@ -435,6 +493,24 @@ static InitFunction initFunction([] ()
 		{
 			Instance<fx::ResourceManager>::Get()->ResetResources();
 		});
+
+		console::GetDefaultContext()->GetCommandManager()->FallbackEvent.Connect([=](const std::string& cmd, const ProgramArguments& args, const std::any& context)
+		{
+			if (netLibrary->GetConnectionState() != NetLibrary::CS_ACTIVE)
+			{
+				return true;
+			}
+
+			std::string s = console::GetDefaultContext()->GetCommandManager()->GetRawCommand();
+
+			NetBuffer buffer(131072);
+			buffer.Write<uint16_t>(s.size());
+			buffer.Write(s.c_str(), std::min(s.size(), static_cast<size_t>(INT16_MAX)));
+
+			netLibrary->SendReliableCommand("msgServerCommand", buffer.GetBuffer(), buffer.GetCurLength());
+
+			return false;
+		}, 99999);
 	});
 });
 /*

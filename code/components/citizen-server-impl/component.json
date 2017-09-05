@@ -8,9 +8,12 @@
 		"citizen:server:instance",
 		"citizen:server:net",
 		"vfs:impl:server",
+		"vendor:cpr",
+		"vendor:curl",
 		"vendor:enet",
 		"vendor:tbb",
-		"vendor:boost_random"
+		"vendor:boost_random",
+		"vendor:linenoise"
 	],
 	"provides": []
 }

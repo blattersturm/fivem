@@ -52,7 +52,7 @@ class ConsoleVariableManager;
 
 namespace console
 {
-class Context
+class Context : public fwRefCountable
 {
 public:
 	Context();
@@ -61,7 +61,7 @@ public:
 
 	virtual void ExecuteSingleCommand(const std::string& command);
 
-	virtual void ExecuteSingleCommand(const ProgramArguments& arguments);
+	virtual void ExecuteSingleCommandDirect(const ProgramArguments& arguments);
 
 	virtual void AddToBuffer(const std::string& text);
 
@@ -80,6 +80,11 @@ public:
 		return m_fallbackContext;
 	}
 
+	inline bool IsBufferEmpty()
+	{
+		return m_commandBuffer.empty();
+	}
+
 private:
 	Context* m_fallbackContext;
 
@@ -92,11 +97,46 @@ private:
 	std::mutex m_commandBufferMutex;
 };
 
-Context* GetDefaultContext();
+#ifdef COMPILING_CORE
+extern "C" DLL_EXPORT Context* GetDefaultContext();
+
+extern "C" DLL_EXPORT void CreateContext(Context* parentContext, fwRefContainer<Context>* outContext);
+#elif defined(_WIN32)
+inline Context* GetDefaultContext()
+{
+	using TCoreFunc = decltype(&GetDefaultContext);
+
+	static TCoreFunc func;
+
+	if (!func)
+	{
+		func = (TCoreFunc)GetProcAddress(GetModuleHandle(L"CoreRT.dll"), "GetDefaultContext");
+	}
+
+	return (func) ? func() : 0;
+}
+
+inline void CreateContext(Context* parentContext, fwRefContainer<Context>* outContext)
+{
+	using TCoreFunc = decltype(&CreateContext);
+
+	static TCoreFunc func;
+
+	if (!func)
+	{
+		func = (TCoreFunc)GetProcAddress(GetModuleHandle(L"CoreRT.dll"), "CreateContext");
+	}
+
+	return (func) ? func(parentContext, outContext) : nullptr;
+}
+#else
+extern "C" Context* GetDefaultContext();
+extern "C" void CreateContext(Context* parentContext, fwRefContainer<Context>* outContext);
+#endif
 
 void ExecuteSingleCommand(const std::string& command);
 
-void ExecuteSingleCommand(const ProgramArguments& arguments);
+void ExecuteSingleCommandDirect(const ProgramArguments& arguments);
 
 ProgramArguments Tokenize(const std::string& line);
 

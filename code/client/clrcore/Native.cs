@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using System.Security;
 
@@ -37,15 +37,21 @@ namespace CitizenFX.Core.Native
         }
     }
 
+	[StructLayout(LayoutKind.Explicit)]
     internal struct NativeVector3
     {
+		[FieldOffset(0)]
         public float X;
-        public float Y;
-        public float Z;
+
+		[FieldOffset(8)]
+		public float Y;
+
+		[FieldOffset(16)]
+		public float Z;
 
         public static implicit operator Vector3(NativeVector3 self)
         {
-            return Vector3.Zero;
+            return new Vector3(self.X, self.Y, self.Z);
         }
     }
 
@@ -350,7 +356,17 @@ namespace CitizenFX.Core.Native
             return new InputArgument(value);
         }
 
-        [SecuritySafeCritical]
+		public static implicit operator InputArgument(Vector3 value)
+		{
+			return new InputArgument(value);
+		}
+
+		public static implicit operator InputArgument(Delegate value)
+		{
+			return new InputArgument(InternalManager.CanonicalizeRef(FunctionReference.Create(value).Identifier));
+		}
+
+		[SecuritySafeCritical]
         public static implicit operator InputArgument(INativeValue value)
         {
             return new InputArgument(value.NativeValue);

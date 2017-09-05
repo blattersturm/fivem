@@ -13,12 +13,18 @@ namespace fx
 		m_httpHandler = new Handler();
 		m_httpHandler->handler = [=] (fwRefContainer<net::HttpRequest> request, fwRefContainer<net::HttpResponse> response)
 		{
-			for (auto& prefixEntry : m_handlers)
 			{
-				if (_strnicmp(request->GetPath().c_str(), prefixEntry.first.c_str(), prefixEntry.first.length()) == 0)
+				std::unique_lock<std::mutex> lock(m_handlersMutex);
+
+				for (auto& prefixEntry : m_handlers)
 				{
-					prefixEntry.second(request, response);
-					return true;
+					if (_strnicmp(request->GetPath().c_str(), prefixEntry.first.c_str(), prefixEntry.first.length()) == 0)
+					{
+						lock.unlock();
+
+						prefixEntry.second(request, response);
+						return true;
+					}
 				}
 			}
 
@@ -30,6 +36,9 @@ namespace fx
 
 		m_httpServer = new net::HttpServerImpl();
 		m_httpServer->RegisterHandler(m_httpHandler);
+
+		m_http2Server = new net::Http2ServerImpl();
+		m_http2Server->RegisterHandler(m_httpHandler);
 	}
 
 	HttpServerManager::~HttpServerManager()
@@ -39,7 +48,16 @@ namespace fx
 
 	void HttpServerManager::AddEndpoint(const std::string& prefix, const TEndpointHandler& handler)
 	{
+		std::unique_lock<std::mutex> lock(m_handlersMutex);
+
 		m_handlers.insert({ prefix, handler });
+	}
+
+	void HttpServerManager::RemoveEndpoint(const std::string& prefix)
+	{
+		std::unique_lock<std::mutex> lock(m_handlersMutex);
+
+		m_handlers.erase(prefix);
 	}
 
 	void HttpServerManager::AttachToObject(ServerInstanceBase* instance)
@@ -48,7 +66,7 @@ namespace fx
 
 		listenManager->OnInitializeMultiplexServer.Connect([=](fwRefContainer<net::MultiplexTcpServer> server)
 		{
-			m_httpServer->AttachToServer(server->CreateServer([](const std::vector<uint8_t>& bytes)
+			auto httpPatternMatcher = [](const std::vector<uint8_t>& bytes)
 			{
 				if (bytes.size() > 10)
 				{
@@ -76,19 +94,32 @@ namespace fx
 				}
 
 				return net::MultiplexPatternMatchResult::InsufficientData;
-			}));
+			};
 
-			/*fwRefContainer<net::TLSServer> tlsServer = new net::TLSServer(server->CreateServer([](const std::vector<uint8_t>& bytes)
+			m_httpServer->AttachToServer(server->CreateServer(httpPatternMatcher));
+
+			fwRefContainer<net::TLSServer> tlsServer = new net::TLSServer(server->CreateServer([](const std::vector<uint8_t>& bytes)
 			{
-			if (bytes.size() >= 6)
-			{
-			return (bytes[0] == 0x16 && bytes[5] == 1) ? net::MultiplexPatternMatchResult::Match : net::MultiplexPatternMatchResult::NoMatch;
-			}
+				if (bytes.size() >= 6)
+				{
+					return (bytes[0] == 0x16 && bytes[5] == 1) ? net::MultiplexPatternMatchResult::Match : net::MultiplexPatternMatchResult::NoMatch;
+				}
 
-			return net::MultiplexPatternMatchResult::InsufficientData;
-			}), "citizen/ros/ros.crt", "citizen/ros/ros.key");
+				return net::MultiplexPatternMatchResult::InsufficientData;
+			}), "server-tls.crt", "server-tls.key", true);
 
-			impl->AttachToServer(tlsServer);*/
+			tlsServer->AddRef();
+
+			tlsServer->SetProtocolList({ "h2", "http/1.1" });
+
+			m_http2Server->AttachToServer(tlsServer->GetProtocolServer("h2"));
+			m_httpServer->AttachToServer(tlsServer->GetProtocolServer("http/1.1"));
+
+			// create a TLS multiplex for the default protocol
+			fwRefContainer<net::MultiplexTcpServer> tlsMultiplex = new net::MultiplexTcpServer();
+			m_httpServer->AttachToServer(tlsMultiplex->CreateServer(httpPatternMatcher));
+
+			tlsMultiplex->AttachToServer(tlsServer);
 		});
 	}
 

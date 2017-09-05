@@ -11,6 +11,8 @@
 
 #include <ResourceMetaDataComponent.h>
 
+#include <Error.h>
+
 namespace fx
 {
 ResourceImpl::ResourceImpl(const std::string& name, ResourceManagerImpl* manager)
@@ -64,6 +66,8 @@ ResourceState ResourceImpl::GetState()
 
 bool ResourceImpl::Start()
 {
+	m_manager->MakeCurrent();
+
 	if (m_state != ResourceState::Started)
 	{
 		// skip the starting stage if we're already started
@@ -73,25 +77,35 @@ bool ResourceImpl::Start()
 
 			if (!OnBeforeStart())
 			{
-				m_state = ResourceState::Stopped;
+				if (m_state != ResourceState::Started)
+				{
+					m_state = ResourceState::Stopped;
+				}
+
 				return false;
 			}
 		}
 
-		m_state = ResourceState::Started;
-
 		if (!OnStart())
 		{
-			m_state = ResourceState::Stopped;
+			if (m_state != ResourceState::Started)
+			{
+				m_state = ResourceState::Stopped;
+			}
+
 			return false;
 		}
 	}
+
+	m_state = ResourceState::Started;
 
 	return true;
 }
 
 bool ResourceImpl::Stop()
 {
+	m_manager->MakeCurrent();
+
 	if (m_state != ResourceState::Stopped)
 	{
 		if (!OnStop())

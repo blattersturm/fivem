@@ -12,8 +12,9 @@
 
 #ifndef IS_FXSERVER
 static constexpr std::pair<const char*, ManifestVersion> g_scriptVersionPairs[] = {
-	{ "natives_21e43a33.lua", guid_t{0} },
-	{ "natives_0193d0af.lua", "f15e72ec-3972-4fe4-9c7d-afc5394ae207" }
+	{ "natives_21e43a33.lua",  guid_t{0} },
+	{ "natives_0193d0af.lua",  "f15e72ec-3972-4fe4-9c7d-afc5394ae207" },
+	{ "natives_universal.lua", "44febabe-d386-4d18-afbe-5e627f4af937" }
 };
 #else
 static constexpr std::pair<const char*, ManifestVersion> g_scriptVersionPairs[] = {
@@ -233,6 +234,10 @@ static const luaL_Reg lualibs[] =
 	{ LUA_DBLIBNAME, luaopen_debug },
 	{ LUA_COLIBNAME, luaopen_coroutine },
 	{ LUA_UTF8LIBNAME, luaopen_utf8 },
+#ifdef IS_FXSERVER
+	{ LUA_IOLIBNAME, luaopen_io },
+	{ LUA_OSLIBNAME, luaopen_os },
+#endif
 	{ NULL, NULL }
 };
 
@@ -556,6 +561,7 @@ enum class LuaMetaFields
 	PointerValueVector,
 	ReturnResultAnyway,
 	ResultAsInteger,
+	ResultAsLong,
 	ResultAsFloat,
 	ResultAsString,
 	ResultAsVector,
@@ -839,6 +845,9 @@ int Lua_InvokeNative(lua_State* L)
 			case LuaMetaFields::ResultAsInteger:
 				lua_pushinteger(L, *reinterpret_cast<int32_t*>(&context.arguments[0]));
 				break;
+			case LuaMetaFields::ResultAsLong:
+				lua_pushinteger(L, *reinterpret_cast<int64_t*>(&context.arguments[0]));
+				break;
 			default:
 			{
 				int32_t integer = *reinterpret_cast<int32_t*>(&context.arguments[0]);
@@ -963,11 +972,34 @@ static const struct luaL_Reg g_citizenLib[] =
 	{ "PointerValueVector", Lua_GetMetaField<LuaMetaFields::PointerValueVector> },
 	{ "ReturnResultAnyway", Lua_GetMetaField<LuaMetaFields::ReturnResultAnyway> },
 	{ "ResultAsInteger", Lua_GetMetaField<LuaMetaFields::ResultAsInteger> },
+	{ "ResultAsLong", Lua_GetMetaField<LuaMetaFields::ResultAsLong> },
 	{ "ResultAsFloat", Lua_GetMetaField<LuaMetaFields::ResultAsFloat> },
 	{ "ResultAsString", Lua_GetMetaField<LuaMetaFields::ResultAsString> },
 	{ "ResultAsVector", Lua_GetMetaField<LuaMetaFields::ResultAsVector> },
 	{ nullptr, nullptr }
 };
+
+static int Lua_Print(lua_State* L)
+{
+	int n = lua_gettop(L);  /* number of arguments */
+	int i;
+	lua_getglobal(L, "tostring");
+	for (i = 1; i <= n; i++) {
+		const char *s;
+		size_t l;
+		lua_pushvalue(L, -1);  /* function to be called */
+		lua_pushvalue(L, i);   /* value to print */
+		lua_call(L, 1, 1);
+		s = lua_tolstring(L, -1, &l);  /* get result */
+		if (s == NULL)
+			return luaL_error(L, "'tostring' must return a string to 'print'");
+		if (i > 1) trace("%s", std::string("\t", 1));
+		trace("%s", std::string(s, l));
+		lua_pop(L, 1);  /* pop result */
+	}
+	trace("\n");
+	return 0;
+}
 
 result_t LuaScriptRuntime::Create(IScriptHost *scriptHost)
 {
@@ -1025,6 +1057,11 @@ result_t LuaScriptRuntime::Create(IScriptHost *scriptHost)
 		return hr;
 	}
 
+	if (FX_FAILED(hr = LoadSystemFile("citizen:/scripting/lua/deferred.lua")))
+	{
+		return hr;
+	}
+
 	if (FX_FAILED(hr = LoadSystemFile("citizen:/scripting/lua/scheduler.lua")))
 	{
 		return hr;
@@ -1035,6 +1072,9 @@ result_t LuaScriptRuntime::Create(IScriptHost *scriptHost)
 
 	lua_pushnil(m_state);
 	lua_setglobal(m_state, "loadfile");
+
+	lua_pushcfunction(m_state, Lua_Print);
+	lua_setglobal(m_state, "print");
 
 	return FX_S_OK;
 }

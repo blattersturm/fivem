@@ -1,6 +1,9 @@
 type 'Void'
 	nativeType 'int'
 
+type 'AnyPtr'
+	nativeType 'Any*'
+
 type 'Any'
 	nativeType 'int'
 
@@ -83,6 +86,10 @@ type 'BOOL'
 type 'int'
 	nativeType 'int'
 
+type 'long'
+	nativeType 'int'
+	subType 'long'
+
 type 'float'
 	nativeType 'float'
 
@@ -91,3 +98,6 @@ type 'charPtr'
 
 type 'Vector3'
 	nativeType 'vector3'
+
+type 'func'
+	nativeType 'func'
